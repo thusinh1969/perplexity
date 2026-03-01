@@ -323,6 +323,8 @@ def _make_stream_callback(num_tasks: int = 2):
         "current_task": "",
         "chunk_count": 0,
         "is_last_task": False,
+        "_fa_buffer": "",          # Buffer to detect and strip "Final Answer:" prefix
+        "_fa_stripped": False,     # Whether we've already handled the prefix
     }
 
     def callback(chunk):
@@ -369,8 +371,26 @@ def _make_stream_callback(num_tasks: int = 2):
             return
 
         if not state["header_printed"]:
-            print("\n\nAssistant: ", end="", flush=True)
+            print("\n\nA: ", end="", flush=True)
             state["header_printed"] = True
+
+        # Strip "Final Answer:" prefix from composer output (user doesn't need to see it)
+        if not state["_fa_stripped"]:
+            state["_fa_buffer"] += content
+            FA_PREFIX = "Final Answer:"
+            # Wait until we have enough chars to check
+            if len(state["_fa_buffer"]) < len(FA_PREFIX) + 2:
+                return  # keep buffering
+            # Check and strip
+            stripped = state["_fa_buffer"].lstrip()
+            if stripped.startswith(FA_PREFIX):
+                stripped = stripped[len(FA_PREFIX):].lstrip()
+            state["_fa_stripped"] = True
+            if stripped:
+                print(stripped, end="", flush=True)
+            state["streamed"] = True
+            return
+
         print(content, end="", flush=True)
         state["streamed"] = True
 

@@ -128,9 +128,9 @@ Format:
 }}
 
 CRITICAL rules:
-- Max 5 entities, max 5 relations, max 5 facts. Only the MOST IMPORTANT.
-- Per entity: max 3 attributes. Combine related scores into one attribute.
-- Keep total JSON under 400 tokens. Be extremely concise.
+- Max 10 entities, max 10 relations, max 10 facts per extraction.
+- Per entity: max 5 attributes. Combine related scores into one attribute.
+- Keep total JSON under 800 tokens. Be concise but thorough.
 - Same language as conversation. Merge with existing knowledge (don't duplicate).
 - Return ONLY JSON, no markdown fences, no explanation.
 - If nothing new: {{"entities":[],"relations":[],"facts":[]}}

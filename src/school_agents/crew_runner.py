@@ -453,7 +453,7 @@ def run_crew_with_memory(
 
     log.info("[run_crew_with_memory] Done. Answer %d chars (clean %d). Stats: %s",
              len(raw_answer), len(clean_answer), memory.get_stats())
-    return raw_answer  # caller gets raw for display; memory already has clean version
+    return clean_answer  # stripped of think tags + "Final Answer:" prefix for display
 
 
 def make_openai_client(cfg: AppConfig):

@@ -193,7 +193,8 @@ class QueryExpander:
         self,
         queries: list[str],
         search_fn: Callable[..., dict],
-        max_results_per_query: int = 3,
+        max_results_per_query: int = 5,
+        max_merged_results: int | None = None,
         **search_kwargs,
     ) -> dict:
         """
@@ -203,6 +204,7 @@ class QueryExpander:
             queries: List of search queries (from expand())
             search_fn: Function that takes (query, max_results, **kwargs) → dict with "results" key
             max_results_per_query: Results per individual query
+            max_merged_results: Max results after fusion (default: max_results_per_query * len(queries), capped at 20)
             **search_kwargs: Extra kwargs passed to search_fn
 
         Returns:
@@ -212,6 +214,9 @@ class QueryExpander:
               - "total_raw": total results before dedup
               - "fusion_method": "reciprocal_rank"
         """
+        if max_merged_results is None:
+            # Default: keep most results but cap at reasonable limit
+            max_merged_results = min(max_results_per_query * len(queries), 20)
         all_results: list[dict] = []  # (result_dict, query_index, rank)
         query_results_map: list[list[dict]] = []
 
@@ -234,7 +239,7 @@ class QueryExpander:
                 query_results_map.append([])
 
         # Reciprocal rank fusion
-        merged = self._reciprocal_rank_fusion(query_results_map)
+        merged = self._reciprocal_rank_fusion(query_results_map, max_results=max_merged_results)
 
         elapsed = time.perf_counter() - t0
         total_raw = sum(len(qr) for qr in query_results_map)
@@ -252,7 +257,7 @@ class QueryExpander:
     def _reciprocal_rank_fusion(
         query_results: list[list[dict]],
         k: int = 60,
-        max_results: int = 5,
+        max_results: int = 15,
     ) -> list[dict]:
         """
         Reciprocal Rank Fusion (RRF) to merge results from multiple queries.
