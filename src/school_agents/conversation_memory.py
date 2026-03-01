@@ -144,14 +144,29 @@ class ConversationMemory:
         if self.summary:
             parts.append(f"[Conversation history summary]\n{self.summary}")
 
-        # Tier 2: Recent turns (verbatim)
+        # Tier 2: Recent turns (verbatim, with size guard)
         recent = self.turns[self.summary_covers_up_to:]
         recent = recent[-self.max_recent_turns:]
         if recent:
             recent_text = []
+            # Budget for recent turns: max_context_tokens minus summary/facts overhead
+            recent_budget = self.max_context_tokens
+            if self.summary:
+                recent_budget -= len(self.summary) // 4
+            recent_budget = max(recent_budget, 1024)  # minimum 1024 tokens
+
+            total_recent_tokens = sum(t.token_estimate for t in recent)
+
             for t in recent:
                 label = "User" if t.role == "user" else "Assistant"
-                recent_text.append(f"{label}: {t.content}")
+                content = t.content
+                # If recent turns collectively exceed budget, truncate each proportionally
+                if total_recent_tokens > recent_budget and t.token_estimate > 0:
+                    max_chars = int(len(content) * (recent_budget / total_recent_tokens))
+                    max_chars = max(max_chars, 500)  # at least 500 chars per turn
+                    if len(content) > max_chars:
+                        content = content[:max_chars] + f"\n... [truncated from {len(t.content)} chars]"
+                recent_text.append(f"{label}: {content}")
             parts.append("[Recent conversation]\n" + "\n".join(recent_text))
 
         context = "\n\n".join(parts)
@@ -290,7 +305,11 @@ class ConversationMemory:
         """Check if unsummarized turns exceed token budget."""
         unsummarized = self.turns[self.summary_covers_up_to:]
         if len(unsummarized) <= self.max_recent_turns:
-            return False  # few enough to keep verbatim
+            # Even with few turns, check if they're individually huge
+            # (e.g., 1 assistant turn with 30K chars of web search results)
+            # If so, we can't compress (nothing older to compress), but
+            # build_context will truncate them. So return False.
+            return False
         total_tokens = sum(t.token_estimate for t in unsummarized)
         return total_tokens > self.max_context_tokens
 

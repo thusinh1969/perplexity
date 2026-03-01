@@ -276,6 +276,67 @@ def bootstrap(cfg: AppConfig) -> None:
     set_tool_config(cfg.tools)
 
 
+# ── Vision support (multimodal images) ────────────────────────────────
+
+_vision_patched = False
+
+
+def _inject_images_into_messages(messages: list[dict], images: list[dict]) -> None:
+    """Transform the LAST user message to OpenAI vision format (in-place).
+
+    Standard ChatML/Qwen3 multimodal format:
+        {"role": "user", "content": [
+            {"type": "text", "text": "original text"},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
+            ...multiple images OK...
+        ]}
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg["content"]
+            if isinstance(content, str):
+                parts: list[dict] = [{"type": "text", "text": content}]
+                for img in images:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
+                    })
+                msg["content"] = parts
+            break
+
+
+def _ensure_vision_patch() -> None:
+    """One-time monkey-patch litellm.completion to inject images when present.
+
+    Checks image_context each call — zero overhead when no images.
+    """
+    global _vision_patched
+    if _vision_patched:
+        return
+
+    try:
+        import litellm
+    except ImportError:
+        log.warning("[vision] litellm not installed — vision patch skipped")
+        return
+
+    _orig = litellm.completion
+
+    def _vision_completion(*args, **kwargs):
+        from .image_context import get_images
+        imgs = get_images()
+        if imgs:
+            msgs = kwargs.get("messages")
+            if msgs:
+                _inject_images_into_messages(msgs, imgs)
+                log.debug("[vision] Injected %d image(s) into LLM call", len(imgs))
+        return _orig(*args, **kwargs)
+
+    litellm.completion = _vision_completion
+    _vision_patched = True
+    log.info("[vision] litellm.completion patched for multimodal images")
+
+
 # ── Multi-turn memory support ─────────────────────────────────────────
 
 def run_crew_with_memory(
@@ -285,6 +346,7 @@ def run_crew_with_memory(
     memory: Any,  # ConversationMemory (import at runtime to avoid circular)
     stream_callback: Any = None,  # callable(chunk) — called for each streaming chunk
     status_callback: Any = None,  # callable(msg) — called for status updates (e.g. "Extracting facts...")
+    images: list[dict] | None = None,  # [{"b64": str, "mime": str}, ...] for vision
 ) -> str:
     """
     Run crew with multi-turn conversation context.
@@ -329,6 +391,13 @@ def run_crew_with_memory(
     }
 
     # 3. Run crew (streaming or blocking)
+    # ── Set up vision if images provided ──
+    if images:
+        from .image_context import set_images, clear_images
+        _ensure_vision_patch()
+        set_images(images)
+        log.info("[run_crew_with_memory] Vision mode: %d image(s)", len(images))
+
     use_stream = stream_callback is not None
     crew = _build_crew(cfg, routes, stream=use_stream)
 
@@ -412,6 +481,11 @@ def run_crew_with_memory(
     else:
         result = crew.kickoff(inputs=enriched)
         raw_answer = result.raw if hasattr(result, "raw") else str(result)
+
+    # ── Clear vision context ──
+    if images:
+        from .image_context import clear_images
+        clear_images()
 
     # Strip think tags ONLY for memory storage — display gets raw
     clean_answer = strip_think_tags(raw_answer)

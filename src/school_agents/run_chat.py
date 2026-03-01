@@ -39,6 +39,17 @@ from .context_compressor import ContextCompressor
 from .conversation_memory import ConversationMemory
 
 
+# ── Image helpers ─────────────────────────────────────────────────────
+
+def _encode_image(path: str) -> dict:
+    """Encode image file to base64 dict for vision pipeline."""
+    import base64, mimetypes
+    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return {"b64": b64, "mime": mime}
+
+
 def _setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
     fmt = (
@@ -125,12 +136,16 @@ def _run_one_turn(
     interactive: bool = False,
     stream_callback=None,
     status_callback=None,
+    images: list[dict] | None = None,
 ) -> str:
     """Execute a single conversation turn with memory and optional query expansion."""
     log = logging.getLogger("school_agents.run_chat")
 
-    # 1. Record user turn
-    memory.add_user_turn(query)
+    # 1. Record user turn (note images in memory, NOT the base64)
+    turn_text = query
+    if images:
+        turn_text += f" [📎 {len(images)} image(s) attached]"
+    memory.add_user_turn(turn_text)
 
     # 2. Build context for routing
     context = memory.build_context(current_query=query)
@@ -173,7 +188,8 @@ def _run_one_turn(
     t1 = time.perf_counter()
     answer = run_crew_with_memory(cfg, routes, inputs, memory,
                                   stream_callback=stream_callback,
-                                  status_callback=status_callback)
+                                  status_callback=status_callback,
+                                  images=images)
     log.info("Crew done in %.1fs", time.perf_counter() - t1)
 
     return answer
@@ -409,6 +425,8 @@ def main():
     ap.add_argument("--stream", action="store_true",
                     help="Stream final answer token-by-token (Perplexity-style)")
     ap.add_argument("--debug", action="store_true", help="Enable debug logging")
+    ap.add_argument("--image", nargs="*", default=None,
+                    help="Image file(s) to attach (for vision models). Can repeat: --image a.jpg b.png")
 
     # ── CLI overrides for memory.yaml values ──
     ap.add_argument("--compressor", default=None,
@@ -538,7 +556,16 @@ def main():
     if args.interactive:
         # ── Interactive REPL ──
         print("\nInteractive mode. Type 'quit' to exit, 'stats' for memory stats, 'facts' for knowledge graph.\n")
-        print("Commands: quit, stats, facts, clear, expand <query>\n")
+        print("Commands: quit, stats, facts, clear, expand <query>")
+        print("Images:   img:/path/to/photo.jpg what is this?  (multiple: img:a.jpg img:b.png question)\n")
+        _pending_images: list[dict] = []  # images from --image flag persist for first turn
+        if args.image:
+            for p in args.image:
+                try:
+                    _pending_images.append(_encode_image(p))
+                    print(f"  📎 Loaded: {p}")
+                except Exception as e:
+                    print(f"  ⚠️ Failed to load {p}: {e}")
         while True:
             try:
                 query = input("You: ").strip()
@@ -548,6 +575,27 @@ def main():
 
             if not query:
                 continue
+
+            # ── Parse inline images: img:path.jpg ──
+            turn_images = list(_pending_images)  # use pending from --image (first turn only)
+            _pending_images.clear()
+            parts = query.split()
+            text_parts = []
+            for p in parts:
+                if p.startswith("img:"):
+                    path = p[4:]
+                    try:
+                        turn_images.append(_encode_image(path))
+                        print(f"  📎 {path}")
+                    except Exception as e:
+                        print(f"  ⚠️ {path}: {e}")
+                else:
+                    text_parts.append(p)
+            query = " ".join(text_parts).strip()
+            if not query and not turn_images:
+                continue
+            if not query and turn_images:
+                query = "Describe these images."
             if query.lower() in ("quit", "exit", "q"):
                 break
             if query.lower() == "stats":
@@ -608,6 +656,7 @@ def main():
                         interactive=True,
                         stream_callback=cb,
                         status_callback=_status,
+                        images=turn_images or None,
                     )
                     elapsed = time.perf_counter() - t0
                     if cb_state["streamed"]:
@@ -620,6 +669,7 @@ def main():
                         args.student_id, args.from_date, args.to_date,
                         interactive=True,
                         status_callback=_status,
+                        images=turn_images or None,
                     )
                     elapsed = time.perf_counter() - t0
                     print(f"\nAssistant ({elapsed:.1f}s):\n{answer}\n")
@@ -631,6 +681,9 @@ def main():
 
     elif args.query:
         # ── Single query ──
+        cli_images = None
+        if args.image:
+            cli_images = [_encode_image(p) for p in args.image]
         try:
             if args.stream:
                 cb, cb_state = _make_stream_callback()
@@ -639,6 +692,7 @@ def main():
                     args.student_id, args.from_date, args.to_date,
                     interactive=False,
                     stream_callback=cb,
+                    images=cli_images,
                 )
                 if cb_state["streamed"]:
                     print()  # final newline after streaming
@@ -649,6 +703,7 @@ def main():
                     cfg, memory, args.query,
                     args.student_id, args.from_date, args.to_date,
                     interactive=False,
+                    images=cli_images,
                 )
                 print(answer)
             bank.flush()
