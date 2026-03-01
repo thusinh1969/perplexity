@@ -1,0 +1,38 @@
+web:
+  tavily:
+    api_key: "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"
+    base_url: "https://api.tavily.com"
+    search_depth: "advanced"   # advanced|basic|fast|ultra-fast
+    max_results: 5
+    include_raw_content: false
+
+student_apis:
+  base_url: "https://school.example.com/api"
+  api_key: "YOUR_INTERNAL_KEY"
+  endpoints:
+    profile: "/students/{student_id}"
+    grades: "/students/{student_id}/grades"
+    attendance: "/students/{student_id}/attendance"
+
+rag:
+  base_url: "https://rag.example.com/api"
+  api_key: "YOUR_RAG_KEY"
+  defaults:
+    use_dense: true
+    use_bm25: true
+    alpha: 0.5          # hybrid weight: dense vs bm25
+    top_k: 20
+    rerank:
+      enabled: true
+      model: "bge-reranker-v2"
+      top_k: 10
+
+audio:
+  enabled: false
+  stt:
+    # if enabled: you can point to OpenAI/Whisper-like or internal ASR endpoint
+    base_url: "https://speech.example.com"
+    api_key: "YOUR_STT_KEY"
+  tts:
+    base_url: "https://speech.example.com"
+    api_key: "YOUR_TTS_KEY"

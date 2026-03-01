@@ -1,0 +1,31 @@
+memory:
+  # Storage backend: "memorydb" (JSONL file) or "redis"
+  backend: "memorydb"
+  data_dir: "./data/memory"          # MemoryDB: directory for JSONL files
+
+  # Redis settings (only used when backend=redis)
+  redis:
+    url: "redis://localhost:6379/0"
+    prefix: "conv:"
+    ttl: 7200                        # session TTL in seconds (2 hours)
+
+  # Conversation context management
+  max_recent_turns: 4                # keep last N turns verbatim (2 user/assistant pairs)
+  max_context_tokens: 4096           # compress when unsummarized turns exceed this
+  enable_facts: true                 # Tier-1: extract entities/relations/facts per turn
+
+  # Compression strategy: "llm_summary" | "llmlingua" | "hybrid"
+  compressor: "llm_summary"
+
+  # Query expansion for web search
+  query_expand:
+    enabled: true                    # enable multi-query expansion
+    mode: "confirm"                  # "auto" (expand silently) | "confirm" (ask user first)
+    max_queries: 3                   # number of expanded queries
+    max_results_per_query: 5         # results per individual query
+
+  # LLMLingua settings (only used when compressor=llmlingua or hybrid)
+  llmlingua:
+    target_ratio: 0.4                # keep 40% of tokens
+    device: "cpu"                    # "cpu" or "cuda"
+    model: "microsoft/llmlingua-2-xlm-roberta-large-meetingbank" # "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"

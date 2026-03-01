@@ -1,0 +1,14 @@
+[project]
+name = "school-agents"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+school-agents = "school_agents.run:main"

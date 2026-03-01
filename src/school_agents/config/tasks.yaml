@@ -1,0 +1,146 @@
+route_task:
+  description: |
+    Decide which routes to run for this user query.
+    {conversation_context}
+
+    User query: {user_query}
+
+    Output STRICT JSON with:
+    - routes: list of strings among ["web", "student", "policy_rag"], OR empty [] ONLY for greetings/meta
+    - student_id: string or null
+    - from_date: YYYY-MM-DD or null
+    - to_date: YYYY-MM-DD or null
+    - policy_domain: one of ["y_khoa","y_te","duoc","other"] (infer from text)
+
+    CRITICAL ROUTING RULES:
+    - routes=[] ONLY for these EXACT cases: "hello", "hi", "thanks", "what do you remember", "summarize our chat"
+    - routes=["web"] for EVERYTHING ELSE. This includes:
+      * ANY question about news, events, wars, politics, economy, technology, science
+      * ANY question with time words: "72h", "next", "tới", "sắp", "latest", "update", "mới nhất"
+      * ANY factual question — even if the same topic was discussed before
+      * EVEN IF you see the answer in conversation history — ALWAYS route to web for fresh data
+      * "Tình hình X thế nào?" = web. "X sẽ ra sao?" = web. "Dự đoán Y?" = web.
+    - routes=["student"] when: user asks about a specific student's data
+    - routes=["policy_rag"] when: user asks about school policy/regulations
+    - You can combine routes, e.g. ["web","student"] if both are needed
+
+    OVERRIDE: If the user asks about ANY real-world topic, return routes=["web"]. NEVER return [] for a substantive question. When in doubt, return ["web"].
+  expected_output: |
+    {"routes":["web"],"student_id":null,"from_date":null,"to_date":null,"policy_domain":"other"}
+  agent: router
+
+web_task:
+  description: |
+    {conversation_context}
+
+    === YOUR TASK ===
+    Research this question using web search:
+    {user_query}
+
+    === WORKFLOW ===
+    STEP 1: Check if [Pre-searched results] are provided in the question above.
+            These come from query expansion and may already contain useful data.
+
+    STEP 2: Evaluate the pre-searched results:
+            - Are they RECENT enough for this topic? (For fast-moving news: must be <3 days old)
+            - Do they FULLY answer the question with sufficient depth?
+            - If YES to both → go to STEP 4
+            - If NO to either → go to STEP 3
+
+    STEP 3: Call ONE search tool to get fresh/additional information:
+            - For specific questions → web_search_deep(query="precise search terms")
+            - For broad topics → web_search_expanded(query="broad topic")
+            Choose search terms carefully: be specific, include dates if relevant.
+
+    STEP 4: Combine ALL evidence (pre-searched + your search results if any).
+            Write your Final Answer as JSON:
+
+            Final Answer: {"findings": ["point 1", "point 2", ...], "sources": [{"url": "...", "title": "..."}]}
+
+    === RULES ===
+    - NEVER call the same tool twice with the same query.
+    - After receiving tool results, IMMEDIATELY write your Final Answer.
+    - Include ALL URLs from both pre-searched and your own search.
+    - Findings should be factual statements, not opinions.
+    - You MUST prefix with "Final Answer:" or your response will be rejected.
+  expected_output: "Final Answer: JSON with findings and sources."
+  agent: web_researcher
+
+student_task:
+  description: |
+    Fetch student info using internal APIs.
+
+    Inputs:
+    - student_id: {student_id}
+    - from_date: {from_date}
+    - to_date: {to_date}
+
+    Required calls:
+    1) student_get_profile(student_id)
+    2) student_get_grades(student_id, from_date, to_date)
+    3) student_get_attendance(student_id, from_date, to_date)
+
+    Write your response starting with "Final Answer:" followed by STRICT JSON:
+    Final Answer: {"profile":{...},"grades":[...],"attendance":[...]}
+
+    You MUST prefix your response with "Final Answer:" or it will be rejected.
+  expected_output: "Final Answer: JSON with profile, grades, attendance."
+  agent: student_data
+
+policy_task:
+  description: |
+    Use internal RAG to answer policy/syllabus/regulation questions for Medical/Healthcare/Pharmacy.
+
+    Query: {user_query}
+    Domain hint: {policy_domain}
+
+    If domain is one of y_khoa/y_te/duoc OR query is clearly about school policy:
+      - call rag_query_policy(query=user_query, domain=policy_domain)
+    Otherwise:
+      - Final Answer: {"skipped":true,"reason":"domain not medical policy"}
+
+    Write your response starting with "Final Answer:" followed by JSON with answer + citations.
+    You MUST prefix your response with "Final Answer:" or it will be rejected.
+  expected_output: "Final Answer: JSON with answer + citations from RAG, or skipped."
+  agent: policy_rag
+
+compose_task:
+  description: |
+    {conversation_context}
+
+    === YOUR TASK ===
+    Compose the final answer for this user question:
+    {user_query}
+
+    === EVIDENCE AVAILABLE ===
+    You may receive evidence from these specialist agents:
+    - web_result: JSON with findings and sources from web search
+    - student_result: JSON with student profile, grades, attendance
+    - policy_result: JSON with policy documents and citations from RAG
+
+    === OUTPUT RULES ===
+    1. Start your response with "Final Answer:" — this is MANDATORY.
+    2. Write in Vietnamese (unless user writes in English).
+    3. Use ALL relevant evidence. Do not skip any important findings.
+    4. For date-relative questions: the current date/time is at the top of the context.
+       Calculate actual dates. Example: "72 giờ tới" from March 1 = March 1-4.
+    5. If evidence is insufficient for part of the question, say so honestly.
+    6. If web results were used, end with a numbered "Nguồn:" list of URLs.
+    7. Do NOT output raw JSON to the user. Write natural, readable prose.
+    8. Be thorough but concise. No filler sentences.
+    9. Base your answer ONLY on the evidence provided by other agents.
+    10. Do NOT make up information. If no evidence was provided, say:
+        "Không có kết quả tìm kiếm. Vui lòng thử lại."
+
+    === FORMAT EXAMPLE ===
+    Final Answer: Theo các nguồn tin mới nhất, tình hình...
+
+    **Điểm chính:**
+    1. ...
+    2. ...
+
+    Nguồn:
+    [1] https://example.com/article1
+    [2] https://example.com/article2
+  expected_output: "Final Answer: Complete answer in Vietnamese based on provided evidence + sources."
+  agent: composer

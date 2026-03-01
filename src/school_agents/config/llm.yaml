@@ -1,0 +1,9 @@
+llm:
+  model: "qwen/qwen3-coder-next"
+  base_url: "http://10.211.55.2:1234/v1"
+  api_key: "sk-lm-ckOnzOQj:J4Sj1siIHyt4NrTIjiwr"
+  temperature: 1.0
+  top_p: 0.95
+  top_k: 40
+  max_tokens: 8192
+  structured_max_tokens: 16384   # for fact extraction, query expansion, compression (think: 8192+, non-think: 4096)
