@@ -21,14 +21,44 @@ log = logging.getLogger("school_agents.crew_runner")
 
 # ── helpers ────────────────────────────────────────────────────────────
 
-def _make_llm(cfg: AppConfig) -> LLM:
+class VisionLLM(LLM):
+    """LLM that auto-injects images from image_context into messages.
+
+    Works with ANY OpenAI-compatible backend (vLLM, Ollama, LMStudio, etc).
+    When no images are set, behaves identically to base LLM.
+    """
+
+    def supports_multimodal(self) -> bool:
+        """Always True — we handle vision format ourselves."""
+        return True
+
+    def _prepare_completion_params(self, messages, tools=None, skip_file_processing=False):
+        params = super()._prepare_completion_params(messages, tools, skip_file_processing)
+        from .image_context import get_images
+        imgs = get_images()
+        if imgs and "messages" in params:
+            for msg in reversed(params["messages"]):
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    parts = [{"type": "text", "text": msg["content"]}]
+                    for img in imgs:
+                        parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
+                        })
+                    msg["content"] = parts
+                    log.info("[vision] Injected %d image(s) into LLM call", len(imgs))
+                    break
+        return params
+
+
+def _make_llm(cfg: AppConfig) -> VisionLLM:
     log.info(
         "[LLM] Creating: model=%s base_url=%s temp=%.1f top_p=%.2f top_k=%d rep_pen=%.2f max_tokens=%d",
         cfg.llm.model, cfg.llm.base_url, cfg.llm.temperature,
         cfg.llm.top_p, cfg.llm.top_k, cfg.llm.repetition_penalty,
         cfg.llm.max_tokens,
     )
-    llm = LLM(
+    llm = VisionLLM(
         model=cfg.llm.model,
         provider="openai",
         base_url=cfg.llm.base_url,
@@ -276,89 +306,6 @@ def bootstrap(cfg: AppConfig) -> None:
     set_tool_config(cfg.tools)
 
 
-# ── Vision support (multimodal images) ────────────────────────────────
-
-_vision_patched = False
-
-
-def _inject_images_into_messages(messages: list[dict], images: list[dict]) -> None:
-    """Transform the LAST user message to OpenAI Vision format (in-place).
-
-    Standard ChatML/Qwen multimodal format:
-        {"role": "user", "content": [
-            {"type": "text", "text": "original text"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
-            ...multiple images OK...
-        ]}
-    """
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            content = msg["content"]
-            if isinstance(content, str):
-                parts: list[dict] = [{"type": "text", "text": content}]
-                for img in images:
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
-                    })
-                msg["content"] = parts
-                log.info("[vision] Injected %d image(s) into user message (%d chars text)",
-                         len(images), len(content))
-            elif isinstance(content, list):
-                log.debug("[vision] User message already multimodal, skipping")
-            break
-    else:
-        log.warning("[vision] No user message found — images NOT injected!")
-
-
-def _ensure_vision_patch() -> None:
-    """One-time monkey-patch litellm.completion AND acompletion.
-
-    Uses image_context module-level storage (visible from ANY thread).
-    Zero overhead when no images.
-    """
-    global _vision_patched
-    if _vision_patched:
-        return
-
-    try:
-        import litellm
-    except ImportError:
-        log.warning("[vision] litellm not installed — vision patch skipped")
-        return
-
-    _orig_sync = litellm.completion
-    _orig_async = getattr(litellm, "acompletion", None)
-
-    def _vision_completion(*args, **kwargs):
-        from .image_context import get_images
-        imgs = get_images()
-        if imgs:
-            msgs = kwargs.get("messages")
-            if msgs:
-                _inject_images_into_messages(msgs, imgs)
-            else:
-                log.warning("[vision] %d images but no messages in kwargs!", len(imgs))
-        return _orig_sync(*args, **kwargs)
-
-    async def _vision_acompletion(*args, **kwargs):
-        from .image_context import get_images
-        imgs = get_images()
-        if imgs:
-            msgs = kwargs.get("messages")
-            if msgs:
-                _inject_images_into_messages(msgs, imgs)
-        return await _orig_async(*args, **kwargs)
-
-    litellm.completion = _vision_completion
-    log.info("[vision] litellm.completion patched")
-
-    if _orig_async:
-        litellm.acompletion = _vision_acompletion
-        log.info("[vision] litellm.acompletion patched")
-
-    _vision_patched = True
-
 
 # ── Multi-turn memory support ─────────────────────────────────────────
 
@@ -417,7 +364,6 @@ def run_crew_with_memory(
     # ── Set up vision if images provided ──
     if images:
         from .image_context import set_images, clear_images
-        _ensure_vision_patch()
         set_images(images)
         log.info("[run_crew_with_memory] Vision mode: %d image(s)", len(images))
 
