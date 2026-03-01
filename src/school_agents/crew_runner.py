@@ -282,9 +282,9 @@ _vision_patched = False
 
 
 def _inject_images_into_messages(messages: list[dict], images: list[dict]) -> None:
-    """Transform the LAST user message to OpenAI vision format (in-place).
+    """Transform the LAST user message to OpenAI Vision format (in-place).
 
-    Standard ChatML/Qwen3 multimodal format:
+    Standard ChatML/Qwen multimodal format:
         {"role": "user", "content": [
             {"type": "text", "text": "original text"},
             {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}},
@@ -302,13 +302,20 @@ def _inject_images_into_messages(messages: list[dict], images: list[dict]) -> No
                         "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
                     })
                 msg["content"] = parts
+                log.info("[vision] Injected %d image(s) into user message (%d chars text)",
+                         len(images), len(content))
+            elif isinstance(content, list):
+                log.debug("[vision] User message already multimodal, skipping")
             break
+    else:
+        log.warning("[vision] No user message found — images NOT injected!")
 
 
 def _ensure_vision_patch() -> None:
-    """One-time monkey-patch litellm.completion to inject images when present.
+    """One-time monkey-patch litellm.completion AND acompletion.
 
-    Checks image_context each call — zero overhead when no images.
+    Uses image_context module-level storage (visible from ANY thread).
+    Zero overhead when no images.
     """
     global _vision_patched
     if _vision_patched:
@@ -320,7 +327,8 @@ def _ensure_vision_patch() -> None:
         log.warning("[vision] litellm not installed — vision patch skipped")
         return
 
-    _orig = litellm.completion
+    _orig_sync = litellm.completion
+    _orig_async = getattr(litellm, "acompletion", None)
 
     def _vision_completion(*args, **kwargs):
         from .image_context import get_images
@@ -329,12 +337,27 @@ def _ensure_vision_patch() -> None:
             msgs = kwargs.get("messages")
             if msgs:
                 _inject_images_into_messages(msgs, imgs)
-                log.debug("[vision] Injected %d image(s) into LLM call", len(imgs))
-        return _orig(*args, **kwargs)
+            else:
+                log.warning("[vision] %d images but no messages in kwargs!", len(imgs))
+        return _orig_sync(*args, **kwargs)
+
+    async def _vision_acompletion(*args, **kwargs):
+        from .image_context import get_images
+        imgs = get_images()
+        if imgs:
+            msgs = kwargs.get("messages")
+            if msgs:
+                _inject_images_into_messages(msgs, imgs)
+        return await _orig_async(*args, **kwargs)
 
     litellm.completion = _vision_completion
+    log.info("[vision] litellm.completion patched")
+
+    if _orig_async:
+        litellm.acompletion = _vision_acompletion
+        log.info("[vision] litellm.acompletion patched")
+
     _vision_patched = True
-    log.info("[vision] litellm.completion patched for multimodal images")
 
 
 # ── Multi-turn memory support ─────────────────────────────────────────
