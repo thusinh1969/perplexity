@@ -3,7 +3,7 @@ web:
     api_key: "${TAVILY_API_KEY}"
     base_url: "https://api.tavily.com"
     search_depth: "advanced"   # advanced|basic|fast|ultra-fast
-    max_results: 10
+    max_results: 3
     include_raw_content: false
 
 student_apis:
