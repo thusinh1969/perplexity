@@ -166,31 +166,31 @@ def route(
         parsed = json_repair.loads(cleaned)
         routes = parsed.get("routes", [])
 
-        # Safety: if routes=[] but query is clearly substantive REAL-WORLD question, force web
-        # BUT: conversation/meta/coding/writing queries should stay routes=[]
-        _trivial = {"hello","hi","thanks","thank","bye","quit","stats","facts","clear"}
-        _meta_patterns = (
-            # Conversation/memory
-            "summarize", "summary", "recap", "tóm tắt", "nhắc lại",
-            "what did we", "those we discussed", "discussed", "thảo luận",
-            "our conversation", "cuộc trò chuyện", "nói lại", "repeat",
-            "remember", "nhớ gì", "bạn nhớ", "we talk", "đã nói",
-            "lại cho tôi", "vừa nói", "ở trên", "above",
-            # Writing/translation
-            "write", "viết", "translate", "dịch", "rewrite", "edit",
-            "proofread", "chỉnh sửa", "soạn",
-            # Coding/math
-            "code", "debug", "fix bug", "algorithm", "function",
-            "implement", "refactor", "giải", "tính",
-            # Stable knowledge
-            "explain", "giải thích", "define", "định nghĩa",
-            "what is", "là gì", "how does", "hoạt động",
-        )
+        # Safety: only force web if router says [] BUT query has CLEAR web signals
+        # Trust the router for everything else — it has the full prompt + conversation context
         query_lower = user_query.strip().lower()
-        is_meta = any(p in query_lower for p in _meta_patterns)
-        if not routes and query_lower not in _trivial and len(query_lower) > 5 and not is_meta:
-            log.warning("[route] Router returned empty routes for substantive query — forcing [web]")
-            parsed["routes"] = ["web"]
+
+        if not routes and len(query_lower) > 5:
+            _web_signals = (
+                # Time-sensitive / live data
+                "hôm nay", "hiện tại", "bây giờ", "mới nhất", "latest", "today",
+                "this week", "tuần này", "tháng này", "this month", "right now",
+                "just happened", "vừa xảy ra", "breaking", "tin mới",
+                # Explicit search/verify intent
+                "search", "tìm kiếm", "google", "verify", "kiểm chứng",
+                "nguồn", "source", "link", "citation", "fact check",
+                # Price/market/live data
+                "giá", "price", "stock", "cổ phiếu", "tỷ giá", "exchange rate",
+                "thời tiết", "weather", "score", "kết quả",
+                # Current role holders
+                "ai đang là", "who is the current", "hiện là",
+            )
+            has_web_signal = any(s in query_lower for s in _web_signals)
+            if has_web_signal:
+                log.warning("[route] Router returned [] but query has web signals — forcing [web]")
+                parsed["routes"] = ["web"]
+            else:
+                log.info("[route] Router returned [] — trusting it (no web signals detected)")
 
         log.info("[route] Parsed routes=%s policy_domain=%s", parsed.get("routes"), parsed.get("policy_domain"))
         return parsed
@@ -505,6 +505,19 @@ def run_crew_with_memory(
     return clean_answer
 
 
+def _normalize_image_to_jpeg(b64_data: str, mime: str) -> tuple[str, str]:
+    """Convert any image to JPEG base64. vLLM/some backends reject webp."""
+    if mime in ("image/jpeg", "image/jpg", "image/png"):
+        return b64_data, mime
+    import base64, io
+    from PIL import Image
+    raw = base64.b64decode(b64_data)
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+
+
 def _analyze_images_direct(cfg: AppConfig, images: list[dict], user_query: str) -> str:
     """Call VLM directly with base64 images — bypasses CrewAI entirely.
 
@@ -537,9 +550,12 @@ def _analyze_images_direct(cfg: AppConfig, images: list[dict], user_query: str) 
         )},
     ]
     for img in images:
+        # Normalize to JPEG — some backends (vLLM) don't support webp
+        b64_data, mime = _normalize_image_to_jpeg(img["b64"], img["mime"])
+        print(f"[DEBUG] Image: original={img['mime']}, sending={mime}, b64={len(b64_data)} chars", flush=True)
         content.append({
             "type": "image_url",
-            "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
+            "image_url": {"url": f"data:{mime};base64,{b64_data}"},
         })
 
     model = cfg.llm.model
