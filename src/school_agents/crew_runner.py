@@ -166,10 +166,19 @@ def route(
         parsed = json_repair.loads(cleaned)
         routes = parsed.get("routes", [])
 
-        # Safety: if routes=[] but query is substantive, force web
+        # Safety: if routes=[] but query is clearly substantive REAL-WORLD question, force web
+        # BUT: conversation/meta queries should stay routes=[]
         _trivial = {"hello","hi","thanks","thank","bye","quit","stats","facts","clear"}
+        _meta_patterns = (
+            "summarize", "summary", "recap", "tóm tắt", "nhắc lại",
+            "what did we", "those we discussed", "discussed", "thảo luận",
+            "our conversation", "cuộc trò chuyện", "nói lại", "repeat",
+            "remember", "nhớ gì", "bạn nhớ", "we talk", "đã nói",
+            "lại cho tôi", "vừa nói", "ở trên", "above",
+        )
         query_lower = user_query.strip().lower()
-        if not routes and query_lower not in _trivial and len(query_lower) > 5:
+        is_meta = any(p in query_lower for p in _meta_patterns)
+        if not routes and query_lower not in _trivial and len(query_lower) > 5 and not is_meta:
             log.warning("[route] Router returned empty routes for substantive query — forcing [web]")
             parsed["routes"] = ["web"]
 

@@ -146,6 +146,8 @@ def _run_one_turn(
         routes = ["web"]  # only fallback when key missing entirely
     policy_domain = routing.get("policy_domain", "other")
     log.info("Routed in %.1fs → %s", time.perf_counter() - t0, routes)
+    if not routes:
+        log.info("💬 Conversation-only mode (no web search, no expansion)")
 
     # 4. Query expansion (only for web routes)
     expanded_context = ""

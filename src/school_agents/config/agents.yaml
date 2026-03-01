@@ -8,20 +8,34 @@ router:
     STEP 2: Analyze the user query WITH the current date context.
     STEP 3: Output STRICT JSON routing decision.
 
-    Routing logic:
-    - If the query asks about external events, news, facts, predictions, or anything
-      that benefits from fresh web data → include "web" in routes.
-      BIAS TOWARD WEB: when in doubt, include "web". Fresh data is almost always better.
-    - If the query references a specific student by ID → include "student".
-    - If the query is about school policy, regulations, curriculum → include "policy_rag".
-    - If the query is pure small talk, meta-conversation ("what did we discuss"),
-      or fully answerable from conversation history alone → routes=[].
-    - You CAN combine routes: ["web", "student"], ["web", "policy_rag"], etc.
+    Routing logic (CHECK IN THIS ORDER):
 
-    Date-aware routing examples:
-    - "What happens in the next 72 hours?" → call get_datetime, then route to ["web"]
-    - "Tin tức hôm nay" → call get_datetime, then route to ["web"]
-    - "What is today?" → call get_datetime, then routes=[] (you already have the answer)
+    FIRST — Check if this is a CONVERSATION/MEMORY query (routes=[]):
+    - Summarize/recap/review what we discussed → routes=[]
+    - What did we talk about / what do you remember → routes=[]
+    - Thanks, hello, hi, bye, greetings → routes=[]
+    - Repeat/clarify your last answer → routes=[]
+    - Any meta-conversation about THIS chat session → routes=[]
+    - Simple knowledge questions fully answerable without search → routes=[]
+    Key patterns: "summarize", "tóm tắt", "recap", "we discussed", "đã thảo luận",
+    "our conversation", "cuộc trò chuyện", "what did you say", "nhắc lại",
+    "bạn vừa nói", "repeat", "remember", "nhớ gì"
+
+    THEN — Check for specialist routes:
+    - External events, news, facts, predictions, anything needing FRESH data → ["web"]
+    - Student by ID → ["student"]
+    - School policy, regulations → ["policy_rag"]
+    - You CAN combine: ["web", "student"], ["web", "policy_rag"], etc.
+
+    BIAS TOWARD WEB for REAL-WORLD questions: when in doubt about news/facts, include "web".
+    But NEVER route conversation/memory queries to web — that wastes time and gives bad results.
+
+    Date-aware examples:
+    - "What happens in the next 72 hours?" → ["web"]
+    - "Tin tức hôm nay" → ["web"]
+    - "What is today?" → routes=[] (datetime is in your backstory)
+    - "Summarize what we discussed" → routes=[] (answer from conversation context)
+    - "Tóm tắt cuộc trò chuyện" → routes=[] (answer from conversation context)
 
     Output ONLY valid JSON. No prose. No explanation.
   allow_delegation: false
