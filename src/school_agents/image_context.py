@@ -22,13 +22,11 @@ _current_images: list[dict] = []
 
 
 def set_images(images: list[dict]) -> None:
-    """Store images for current request.
-
-    Args:
-        images: List of {"b64": base64_string, "mime": "image/jpeg|image/png|..."}
-    """
+    """Store images for current request."""
     global _current_images
     _current_images = list(images)
+    import sys
+    print(f"[VISION DEBUG] set_images({len(images)} images), b64 sizes: {[len(i.get('b64','')) for i in images]}", file=sys.stderr)
     log.info("[image_ctx] Set %d image(s)", len(images))
 
 

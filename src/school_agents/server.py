@@ -107,7 +107,15 @@ async def _encode_uploads(files: list[UploadFile]) -> list[dict]:
         if not f.content_type or not f.content_type.startswith("image/"):
             continue
         data = await f.read()
-        images.append({"b64": base64.b64encode(data).decode(), "mime": f.content_type})
+        # Convert to JPEG for VLM backend compatibility (webp etc. may not be supported)
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(data))
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        images.append({"b64": base64.b64encode(buf.getvalue()).decode(), "mime": "image/jpeg"})
     return images
 
 

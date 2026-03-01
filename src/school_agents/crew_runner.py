@@ -21,44 +21,14 @@ log = logging.getLogger("school_agents.crew_runner")
 
 # ── helpers ────────────────────────────────────────────────────────────
 
-class VisionLLM(LLM):
-    """LLM that auto-injects images from image_context into messages.
-
-    Works with ANY OpenAI-compatible backend (vLLM, Ollama, LMStudio, etc).
-    When no images are set, behaves identically to base LLM.
-    """
-
-    def supports_multimodal(self) -> bool:
-        """Always True — we handle vision format ourselves."""
-        return True
-
-    def _prepare_completion_params(self, messages, tools=None, skip_file_processing=False):
-        params = super()._prepare_completion_params(messages, tools, skip_file_processing)
-        from .image_context import get_images
-        imgs = get_images()
-        if imgs and "messages" in params:
-            for msg in reversed(params["messages"]):
-                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                    parts = [{"type": "text", "text": msg["content"]}]
-                    for img in imgs:
-                        parts.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
-                        })
-                    msg["content"] = parts
-                    log.info("[vision] Injected %d image(s) into LLM call", len(imgs))
-                    break
-        return params
-
-
-def _make_llm(cfg: AppConfig) -> VisionLLM:
+def _make_llm(cfg: AppConfig) -> LLM:
     log.info(
         "[LLM] Creating: model=%s base_url=%s temp=%.1f top_p=%.2f top_k=%d rep_pen=%.2f max_tokens=%d",
         cfg.llm.model, cfg.llm.base_url, cfg.llm.temperature,
         cfg.llm.top_p, cfg.llm.top_k, cfg.llm.repetition_penalty,
         cfg.llm.max_tokens,
     )
-    llm = VisionLLM(
+    llm = LLM(
         model=cfg.llm.model,
         provider="openai",
         base_url=cfg.llm.base_url,
@@ -361,11 +331,24 @@ def run_crew_with_memory(
     }
 
     # 3. Run crew (streaming or blocking)
-    # ── Set up vision if images provided ──
+    # ── Vision: direct VLM call with base64 → inject analysis as text ──
+    print(f"[DEBUG] run_crew_with_memory: images={'None' if images is None else f'{len(images)} items'}", flush=True)
     if images:
-        from .image_context import set_images, clear_images
-        set_images(images)
-        log.info("[run_crew_with_memory] Vision mode: %d image(s)", len(images))
+        _status("🖼️ Analyzing image(s)...")
+        try:
+            image_analysis = _analyze_images_direct(cfg, images, inputs.get("user_query", ""))
+            if image_analysis:
+                enriched["user_query"] = (
+                    enriched["user_query"]
+                    + "\n\n[Image Analysis — VLM saw the raw image]\n"
+                    + image_analysis
+                )
+                log.info("[vision] Direct VLM analysis: %d chars", len(image_analysis))
+                _status(f"🖼️ Image analyzed ({len(image_analysis)} chars)")
+        except Exception as exc:
+            log.error("[vision] Direct VLM call failed: %s", exc, exc_info=True)
+            print(f"[DEBUG] Image analysis FAILED: {type(exc).__name__}: {exc}", flush=True)
+            _status("⚠️ Image analysis failed")
 
     use_stream = stream_callback is not None
     crew = _build_crew(cfg, routes, stream=use_stream)
@@ -452,9 +435,7 @@ def run_crew_with_memory(
         raw_answer = result.raw if hasattr(result, "raw") else str(result)
 
     # ── Clear vision context ──
-    if images:
-        from .image_context import clear_images
-        clear_images()
+    # (Vision analysis already injected as text before crew.kickoff — no cleanup needed)
 
     # Strip think tags ONLY for memory storage — display gets raw
     clean_answer = strip_think_tags(raw_answer)
@@ -522,6 +503,66 @@ def run_crew_with_memory(
     log.info("[run_crew_with_memory] Done. Answer %d chars (clean %d). Stats: %s",
              len(raw_answer), len(clean_answer), memory.get_stats())
     return clean_answer
+
+
+def _analyze_images_direct(cfg: AppConfig, images: list[dict], user_query: str) -> str:
+    """Call VLM directly with base64 images — bypasses CrewAI entirely.
+
+    This is the ONLY reliable way to get vision working with CrewAI,
+    because CrewAI constructs its own messages and doesn't support
+    multimodal content natively.
+
+    The VLM receives the raw base64 image(s) + user question,
+    returns a detailed analysis that gets injected as text context
+    into the crew pipeline.
+    """
+    from openai import OpenAI
+    from .llm_utils import strip_think_tags
+
+    client = OpenAI(
+        base_url=cfg.llm.base_url,
+        api_key=cfg.llm.api_key or "no-key",
+    )
+
+    # Build multimodal message: text + images
+    content: list[dict] = [
+        {"type": "text", "text": (
+            f"Analyze the image(s) below in detail, in the context of this question:\n"
+            f"{user_query}\n\n"
+            f"Provide:\n"
+            f"1. What the image shows (chart type, data, labels, axes, legends)\n"
+            f"2. Key observations (trends, patterns, anomalies, notable data points)\n"
+            f"3. Numbers/dates/values visible in the image\n"
+            f"Be specific and factual. Describe what you SEE, don't speculate."
+        )},
+    ]
+    for img in images:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{img['mime']};base64,{img['b64']}"},
+        })
+
+    model = cfg.llm.model
+    if model.startswith("openai/"):
+        model = model[len("openai/"):]
+
+    extra = get_llm_extra_body(cfg)
+
+    log.info("[vision] Direct VLM call: model=%s, %d image(s), %d chars query",
+             model, len(images), len(user_query))
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": content}],
+        max_tokens=cfg.llm.max_tokens,
+        temperature=0.3,
+        extra_body=extra,
+    )
+
+    raw = resp.choices[0].message.content or ""
+    analysis = strip_think_tags(raw).strip()
+    log.info("[vision] VLM analysis: %d chars", len(analysis))
+    return analysis
 
 
 def _extract_evidence(crew_result, routes: list[str]) -> tuple[str, list[dict], str]:

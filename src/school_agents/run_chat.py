@@ -42,12 +42,21 @@ from .conversation_memory import ConversationMemory
 # ── Image helpers ─────────────────────────────────────────────────────
 
 def _encode_image(path: str) -> dict:
-    """Encode image file to base64 dict for vision pipeline."""
-    import base64, mimetypes
-    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-    with open(path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-    return {"b64": b64, "mime": mime}
+    """Encode image file to base64 JPEG for vision pipeline.
+
+    Converts any format (webp, png, bmp, tiff...) to JPEG
+    for maximum VLM backend compatibility.
+    """
+    import base64, io
+    from PIL import Image
+
+    img = Image.open(path)
+    if img.mode in ("RGBA", "P", "LA"):
+        img = img.convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+    return {"b64": b64, "mime": "image/jpeg"}
 
 
 def _setup_logging(debug: bool = False):
