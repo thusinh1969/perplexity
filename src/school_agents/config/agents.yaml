@@ -34,9 +34,9 @@ router:
     - Explicit verification/citations requested: "nguồn", "link", "citation", "verify/kiểm chứng"
 
     THIRD — Internal:
-    - Student by ID → add "student"
-    - School policy/regulations/syllabus → add "policy_rag"
-    - You CAN combine: ["web", "student"], ["web", "policy_rag"], etc.
+    - ONLY add "student" if explicitly asked for a specific Student ID / school grades.
+    - ONLY add "policy_rag" if explicitly asked about university policies/regulations.
+    - 🚨 WARNING: Real-world entities (like "Long Chau Pharmacy", "Pharmacity", hospitals) are "web" queries, NOT internal policy or student queries. Do not mix them up!
 
     Output ONLY valid JSON, always include all keys:
     {"routes":[...],"student_id":null|"...","from_date":null|"...","to_date":null|"...","policy_domain":"y_khoa"|"y_te"|"duoc"|"other"}

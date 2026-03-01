@@ -11,7 +11,7 @@ from ..tool_context import get_tool_config
 log = logging.getLogger("school_agents.tools.web")
 
 # Max chars returned to LLM (rough: 1 token ~ 4 chars → 8000 chars ~ 2000 tokens)
-MAX_TOOL_RESULT_CHARS = 16384
+MAX_TOOL_RESULT_CHARS = 8192
 
 
 def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -25,9 +25,14 @@ def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
     return text[:limit] + f"\n... [TRUNCATED — {len(text)} total chars]"
 
 
+def _get_tavily_cfg() -> dict:
+    """Get tavily config from tools.yaml (single source of truth)."""
+    return get_tool_config()["web"]["tavily"]
+
+
 def _get_client() -> TavilyClient:
     """Create a TavilyClient from the YAML tool config."""
-    cfg = get_tool_config()["web"]["tavily"]
+    cfg = _get_tavily_cfg()
     log.debug("[tavily] Creating client (api_key=%s...)", cfg["api_key"][:12])
     return TavilyClient(api_key=cfg["api_key"])
 
@@ -36,11 +41,23 @@ def _get_client() -> TavilyClient:
 
 def _search_deep(
     query: str,
-    max_results: int = 5,
-    search_depth: str = "advanced",
-    include_raw_content: bool = False,
+    max_results: int | None = None,
+    search_depth: str | None = None,
+    include_raw_content: bool | None = None,
 ) -> dict:
-    """Tavily SDK search -> returns dict."""
+    """Tavily SDK search -> returns dict.
+
+    Defaults come from tools.yaml — Python args override only if explicitly passed.
+    """
+    cfg = _get_tavily_cfg()
+
+    # Resolve defaults from config (tools.yaml = single source of truth)
+    if max_results is None:
+        max_results = cfg.get("max_results", 5)
+    if search_depth is None:
+        search_depth = cfg.get("search_depth", "advanced")
+    if include_raw_content is None:
+        include_raw_content = cfg.get("include_raw_content", False)
     # Sanitize include_raw_content — LLM may pass string "false"/"true"
     if isinstance(include_raw_content, str):
         include_raw_content = include_raw_content.lower() in ("true", "1", "yes")
@@ -67,11 +84,12 @@ def _search_deep(
         )
         # Log rough token count (1 token ~ 4 chars)
         approx_tokens = len(result_json) // 4
-        log.warning(
-            "[tavily:search] ⚠️  Response ~%d tokens (JSON %d chars). "
-            "If > model context window → LLM returns None!",
-            approx_tokens, len(result_json),
-        )
+        if approx_tokens > 2000:
+            log.warning(
+                "[tavily:search] ⚠️  Response ~%d tokens (JSON %d chars). "
+                "If > model context window → LLM returns None!",
+                approx_tokens, len(result_json),
+            )
         for i, r in enumerate(result.get("results", [])[:3]):
             log.debug(
                 "[tavily:search] result[%d] url=%s title=%s content_len=%d",
@@ -126,15 +144,21 @@ def _crawl_url(
 
 
 # ── CrewAI tools (thin wrappers returning JSON str) ────────────────────
+#
+# NOTE on defaults: The @tool signature defaults are what the LLM sees in the
+# tool schema. We set them to match tools.yaml so the LLM knows the "normal"
+# values. At runtime, _search_deep() reads tools.yaml as the true source.
+# If you change tools.yaml, update these signatures to match!
 
 @tool("web_search_deep")
 def web_search_deep(
     query: str,
-    max_results: int = 3,
-    search_depth: str = "basic",
+    max_results: int = 5,
+    search_depth: str = "advanced",
 ) -> str:
-    """Tavily Search via official SDK. Returns JSON string with web search results."""
-    log.info("[tool:web_search_deep] CALLED query=%r", query)
+    """Tavily web search. Returns JSON with search results including url, title, content, and relevance score. Use for precise fact lookup."""
+    log.info("[tool:web_search_deep] CALLED query=%r max_results=%d depth=%s",
+             query, max_results, search_depth)
     result = _search_deep(
         query=query,
         max_results=max_results,
@@ -202,10 +226,10 @@ def web_search_then_crawl(query: str, seed_top_k: int = 1) -> str:
 @tool("web_search_expanded")
 def web_search_expanded(
     query: str,
-    max_results_per_query: int = 3,
-    search_depth: str = "basic",
+    max_results_per_query: int = 5,
+    search_depth: str = "advanced",
 ) -> str:
-    """Multi-query expanded search: generates 3 related queries from user question, searches all, merges results via rank fusion. Use for complex or vague questions. Returns JSON with merged results."""
+    """Multi-query expanded search: generates 3 related queries from user question (English + native language + analytical angle), searches all, merges results via rank fusion. Best for complex, vague, or multi-faceted questions. Returns JSON with merged results and source attribution."""
     log.info("[tool:web_search_expanded] CALLED query=%r", query)
 
     from ..query_expander import QueryExpander
@@ -253,8 +277,8 @@ def expand_and_search(
     user_query: str,
     openai_client: Any,
     model: str,
-    max_results_per_query: int = 3,
-    search_depth: str = "basic",
+    max_results_per_query: int = 5,
+    search_depth: str = "advanced",
     selected_queries: list[str] | None = None,
     extra_body: dict | None = None,
 ) -> dict:

@@ -167,14 +167,24 @@ def route(
         routes = parsed.get("routes", [])
 
         # Safety: if routes=[] but query is clearly substantive REAL-WORLD question, force web
-        # BUT: conversation/meta queries should stay routes=[]
+        # BUT: conversation/meta/coding/writing queries should stay routes=[]
         _trivial = {"hello","hi","thanks","thank","bye","quit","stats","facts","clear"}
         _meta_patterns = (
+            # Conversation/memory
             "summarize", "summary", "recap", "tóm tắt", "nhắc lại",
             "what did we", "those we discussed", "discussed", "thảo luận",
             "our conversation", "cuộc trò chuyện", "nói lại", "repeat",
             "remember", "nhớ gì", "bạn nhớ", "we talk", "đã nói",
             "lại cho tôi", "vừa nói", "ở trên", "above",
+            # Writing/translation
+            "write", "viết", "translate", "dịch", "rewrite", "edit",
+            "proofread", "chỉnh sửa", "soạn",
+            # Coding/math
+            "code", "debug", "fix bug", "algorithm", "function",
+            "implement", "refactor", "giải", "tính",
+            # Stable knowledge
+            "explain", "giải thích", "define", "định nghĩa",
+            "what is", "là gì", "how does", "hoạt động",
         )
         query_lower = user_query.strip().lower()
         is_meta = any(p in query_lower for p in _meta_patterns)
