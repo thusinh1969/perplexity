@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/license-MIT-lightgrey.svg" alt="MIT License">
 </p>
 
-# 🔍 Perplexity-Style Multi-Agent Search Framework
+# 🔍 Perplexity-Style Multi-Agent Search Framework with near-Infinite Personal Memory !
 
 **An open, extensible framework that turns any local LLM into a Perplexity-like AI assistant — with smart web search, multi-agent orchestration, conversation memory, and a plug-and-play tool system.**
 
@@ -293,7 +293,7 @@ All config lives in `src/school_agents/config/`. Secrets use `${ENV_VAR}` syntax
 
 ### Giới thiệu
 
-Framework mã nguồn mở giúp biến bất kỳ LLM local nào thành trợ lý AI thông minh kiểu Perplexity — tìm kiếm web thông minh, trả lời có nguồn dẫn, streaming realtime. Chạy trên hạ tầng của bạn, dùng model của bạn.
+Framework mã nguồn mở giúp biến bất kỳ LLM local nào thành trợ lý AI thông minh kiểu Perplexity — tìm kiếm web thông minh, trả lời có nguồn dẫn, streaming realtime. Chạy trên hạ tầng của bạn, dùng model của bạn  và có năng lực nhớ lại nội dung hội thoại gần như vô tận !
 
 ### Tính năng chính
 
