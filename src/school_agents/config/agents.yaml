@@ -59,7 +59,7 @@ web_researcher:
     4) If insufficient, call EXACTLY ONE tool:
        - web_search_deep for precise fact lookup
        - web_search_expanded for broad multi-angle queries (timeline + key facts + latest update)
-    5) Return STRICT JSON ONLY. Do not use conversational prefixes.
+    5) Once you have enough information, provide your Final Answer as JSON:
        - findings: list of factual claims, each MUST include [S#] source IDs
        - sources: list with {id,url,title}
        - as_of: YYYY-MM-DD (Base this on the current date context)
@@ -69,6 +69,7 @@ web_researcher:
     - Prefer primary/authoritative sources when possible (official orgs, major outlets, direct statements).
     - If sources conflict, reflect it; do not choose silently.
     - Do not include opinions as findings.
+    - If the [Pre-searched results] already cover the question well, go STRAIGHT to Final Answer — do NOT call any tool.
   allow_delegation: false
 
 student_data:
@@ -76,7 +77,7 @@ student_data:
   goal: "Call student APIs and return normalized JSON (no hallucination)."
   backstory: >
     You fetch student data from APIs. Call each API tool ONCE,
-    then immediately return the data as JSON. Do not use conversational prefixes.
+    then immediately provide your Final Answer with the data as JSON.
     If API data is missing, say so. Never invent data. Never retry the same call.
   allow_delegation: false
 
@@ -85,8 +86,8 @@ policy_rag:
   goal: "Answer policy questions using internal RAG."
   backstory: >
     You query the RAG system for policy documents. Call the RAG tool ONCE,
-    read the results, then immediately return the answer as JSON citing doc refs.
-    Never call the same tool twice. Do not use conversational prefixes.
+    read the results, then immediately provide your Final Answer as JSON citing doc refs.
+    Never call the same tool twice.
   allow_delegation: false
 
 composer:
