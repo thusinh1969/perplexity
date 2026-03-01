@@ -1,7 +1,7 @@
 llm:
   model: "qwen/qwen3-coder-next"
   base_url: "http://10.211.55.2:1234/v1"
-  api_key: "sk-lm-ckOnzOQj:J4Sj1siIHyt4NrTIjiwr"
+  api_key: "${LLM_API_KEY}"
   temperature: 1.0
   top_p: 0.95
   top_k: 40

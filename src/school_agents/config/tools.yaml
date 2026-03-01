@@ -1,6 +1,6 @@
 web:
   tavily:
-    api_key: "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"
+    api_key: "${TAVILY_API_KEY}"
     base_url: "https://api.tavily.com"
     search_depth: "advanced"   # advanced|basic|fast|ultra-fast
     max_results: 5
@@ -8,7 +8,7 @@ web:
 
 student_apis:
   base_url: "https://school.example.com/api"
-  api_key: "YOUR_INTERNAL_KEY"
+  api_key: "${STUDENT_API_KEY}"
   endpoints:
     profile: "/students/{student_id}"
     grades: "/students/{student_id}/grades"
@@ -16,7 +16,7 @@ student_apis:
 
 rag:
   base_url: "https://rag.example.com/api"
-  api_key: "YOUR_RAG_KEY"
+  api_key: "${RAG_API_KEY}"
   defaults:
     use_dense: true
     use_bm25: true
@@ -32,7 +32,7 @@ audio:
   stt:
     # if enabled: you can point to OpenAI/Whisper-like or internal ASR endpoint
     base_url: "https://speech.example.com"
-    api_key: "YOUR_STT_KEY"
+    api_key: "${STT_API_KEY}"
   tts:
     base_url: "https://speech.example.com"
-    api_key: "YOUR_TTS_KEY"
+    api_key: "${TTS_API_KEY}"

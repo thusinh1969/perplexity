@@ -2,7 +2,56 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
+import os
+import re
 import yaml
+
+
+# ── Env var resolution ──────────────────────────────────────────────
+
+def _load_dotenv(project_root: Path | None = None) -> None:
+    """Load .env file into os.environ (no dependency on python-dotenv)."""
+    # Search order: project_root/.env → cwd/.env
+    candidates = []
+    if project_root:
+        candidates.append(project_root / ".env")
+    candidates.append(Path.cwd() / ".env")
+
+    for env_path in candidates:
+        if env_path.is_file():
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("'\"")
+                    if key and key not in os.environ:  # don't override existing env
+                        os.environ[key] = value
+            return  # loaded first found
+
+
+_ENV_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+def _resolve_env(value: Any) -> Any:
+    """Recursively resolve ${VAR} patterns in strings/dicts/lists."""
+    if isinstance(value, str):
+        def _replacer(m):
+            var_name = m.group(1)
+            env_val = os.environ.get(var_name, "")
+            if not env_val:
+                import logging
+                logging.getLogger("school_agents.config").warning(
+                    "⚠️  Env var %s not set (referenced in config). Using empty string.", var_name
+                )
+            return env_val
+        return _ENV_PATTERN.sub(_replacer, value)
+    elif isinstance(value, dict):
+        return {k: _resolve_env(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_resolve_env(item) for item in value]
+    return value
 
 @dataclass(frozen=True)
 class LLMConfig:
@@ -54,10 +103,16 @@ def load_yaml(path: str | Path) -> dict:
 
 def load_config(root: str | Path) -> AppConfig:
     root = Path(root)
-    llm_raw = load_yaml(root / "llm.yaml")["llm"]
-    tools = load_yaml(root / "tools.yaml")
-    agents = load_yaml(root / "agents.yaml")
-    tasks = load_yaml(root / "tasks.yaml")
+
+    # Load .env from project root (2 levels up from config dir)
+    project_root = root.parent.parent if root.name == "config" else root.parent
+    _load_dotenv(project_root)
+
+    # Load and resolve env vars in all yaml files
+    llm_raw = _resolve_env(load_yaml(root / "llm.yaml")["llm"])
+    tools = _resolve_env(load_yaml(root / "tools.yaml"))
+    agents = load_yaml(root / "agents.yaml")   # no secrets in agents
+    tasks = load_yaml(root / "tasks.yaml")     # no secrets in tasks
 
     llm = LLMConfig(
         model=llm_raw["model"],
