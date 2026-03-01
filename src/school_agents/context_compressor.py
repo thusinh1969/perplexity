@@ -31,10 +31,19 @@ except ImportError:
 
 
 SUMMARY_PROMPT_TEMPLATE = """\
-Summarize this conversation concisely in 2-5 sentences.
-Keep: key topics discussed, decisions made, important facts, names, numbers.
-Drop: greetings, filler words, formatting, redundant details.
-Write in the SAME LANGUAGE as the conversation (if Vietnamese, summarize in Vietnamese).
+Summarize this conversation preserving ALL important details.
+
+RULES:
+- Keep: key topics, questions asked, answers given, decisions made, facts, names, numbers, URLs
+- Keep: technical details, code snippets mentioned, configurations discussed
+- Drop: greetings, filler words, excessive formatting, repeated information
+- Write in the SAME LANGUAGE as the conversation (Vietnamese → Vietnamese, English → English)
+- Scale your summary to the conversation length:
+  * Short conversation (2-4 turns): 3-5 sentences
+  * Medium conversation (5-10 turns): 1-2 paragraphs
+  * Long conversation (10+ turns): 2-4 paragraphs organized by topic
+- Use bullet points for distinct topics if the conversation covers multiple subjects
+- Include specific numbers, dates, names — these are critical context for future turns
 {existing_summary_block}
 Conversation to summarize:
 {history_text}
@@ -165,7 +174,7 @@ class ContextCompressor:
             resp = self._oai.chat.completions.create(
                 model=self._model,
                 messages=[
-                    {"role": "system", "content": "You are a precise summarizer. Output ONLY the summary text. No thinking, no reasoning, no explanation."},
+                    {"role": "system", "content": "You are a thorough conversation summarizer. Capture all important details, decisions, and context. Output ONLY the summary text. No thinking tags, no reasoning, no explanation."},
                     {"role": "user", "content": prompt},
                 ],
                 max_tokens=self._max_tokens,

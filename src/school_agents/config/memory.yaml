@@ -11,7 +11,7 @@ memory:
 
   # Conversation context management
   max_recent_turns: 4                # keep last N turns verbatim (2 user/assistant pairs)
-  max_context_tokens: 8192           # compress when unsummarized turns exceed this
+  max_context_tokens: 16584           # compress when unsummarized turns exceed this
   enable_facts: true                 # Tier-1: extract entities/relations/facts per turn
 
   # Compression strategy: "llm_summary" | "llmlingua" | "hybrid"
