@@ -11,7 +11,7 @@ from ..tool_context import get_tool_config
 log = logging.getLogger("school_agents.tools.web")
 
 # Max chars returned to LLM (rough: 1 token ~ 4 chars → 8000 chars ~ 2000 tokens)
-MAX_TOOL_RESULT_CHARS = 8192
+MAX_TOOL_RESULT_CHARS = 16384
 
 
 def _truncate(text: str, limit: int = MAX_TOOL_RESULT_CHARS) -> str:
@@ -36,8 +36,8 @@ def _get_client() -> TavilyClient:
 
 def _search_deep(
     query: str,
-    max_results: int = 3,
-    search_depth: str = "basic",
+    max_results: int = 5,
+    search_depth: str = "advanced",
     include_raw_content: bool = False,
 ) -> dict:
     """Tavily SDK search -> returns dict."""
