@@ -183,33 +183,40 @@ class ConversationMemory:
         )
         return context
 
-    def extract_facts(self, llm_client: Any, model: str, max_chars_per_turn: int = 3000,
-                       extra_body: dict | None = None, max_tokens: int = 16384) -> dict:
+    def extract_facts_from_evidence(
+        self,
+        llm_client: Any,
+        model: str,
+        evidence_text: str,
+        source_type: str,
+        sources: list[dict] | None = None,
+        user_question: str = "",
+        extra_body: dict | None = None,
+        max_tokens: int = 16384,
+    ) -> dict:
         """
-        Extract entities/relations/facts from the latest turn pair.
+        Extract facts from VERIFIED EVIDENCE only.
 
-        Call this AFTER adding both user + assistant turns.
-        Uses the last 2 turns (user question + assistant answer).
-        Truncates very long turns to avoid exceeding extraction LLM context.
+        Called ONLY when routes include verified sources (web, rag, api).
+        NEVER called for routes=[] (pure conversation, no evidence).
+
+        Args:
+            evidence_text: Raw evidence JSON from web_researcher/rag/api task output
+            source_type: "web" | "rag" | "api"
+            sources: List of source dicts with url/title from evidence
+            user_question: Original user question for context
         """
-        if not self.facts or len(self.turns) < 2:
+        if not self.facts:
             return {"entities": 0, "relations": 0, "facts": 0}
 
-        # Get last user/assistant pair, truncate if needed
-        recent = self.turns[-2:]
-        lines = []
-        for t in recent:
-            label = "User" if t.role == "user" else "Assistant"
-            content = t.content
-            if len(content) > max_chars_per_turn:
-                content = content[:max_chars_per_turn] + f"\n... [truncated, {len(t.content)} total chars]"
-            lines.append(f"{label}: {content}")
-        conversation_text = "\n".join(lines)
-
-        counts = self.facts.extract(
+        counts = self.facts.extract_from_evidence(
             llm_client=llm_client,
             model=model,
-            conversation_text=conversation_text,
+            evidence_text=evidence_text,
+            source_type=source_type,
+            sources=sources,
+            user_question=user_question,
+            turn_id=self._turn_count,
             extra_body=extra_body,
             max_tokens=max_tokens,
         )

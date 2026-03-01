@@ -1,30 +1,18 @@
 """
-fact_store.py — Lightweight knowledge graph extracted from conversations.
+fact_store.py — Evidence-only knowledge graph extracted from verified sources.
 
-Domain-agnostic. Extracts and maintains:
-  - Entities:      {id, type, name, attributes}
-  - Relations:     {subject, predicate, object}
-  - Facts:         {key, value}
+TRUST MODEL: Facts ONLY come from verified evidence (web search, RAG, APIs).
+             NEVER from LLM conversation output (can hallucinate).
+             NEVER from user statements (can be wrong or malicious).
 
-All extracted by LLM after each turn, merged/deduped automatically.
-Injected into prompt as structured Tier-1 context that NEVER gets compressed.
+Each fact tracks its source:
+  - source_type: "web" | "rag" | "api"
+  - source_ref:  URL or document ID
+  - source_title: human-readable source name
+  - turn_id:     which conversation turn produced it
 
-Usage:
-    store = FactStore(bank, session_id="123")
-    store.load()
-
-    # After each turn, extract new knowledge
-    store.extract(
-        llm_client=oai,
-        model="qwen/qwen3-coder-next",
-        conversation_text="User: điểm Nguyễn Văn A?\nAssistant: Toán 8.5...",
-    )
-
-    # Build context for prompt injection
-    context = store.to_context_string()
-    # → "[Known entities]\n- Nguyễn Văn A (person): student_id=20210345\n..."
-
-    store.save()
+Reconciliation: when a newer verified fact contradicts an older one,
+the newer one REPLACES it. Priority: api > rag > web.
 """
 from __future__ import annotations
 
@@ -41,43 +29,64 @@ from .llm_utils import strip_think_tags, extract_json, NO_THINK_SYSTEM, no_think
 
 log = logging.getLogger("school_agents.fact_store")
 
+SOURCE_PRIORITY = {"web": 1, "rag": 2, "api": 3}
+
 
 # ── Data Models ──────────────────────────────────────────────────────
 
 @dataclass
 class Entity:
-    """A named thing mentioned in conversation."""
-    id: str              # normalized key, e.g. "nguyen_van_a", "python_3.13"
-    type: str            # e.g. "person", "software", "organization", "policy", "course"
-    name: str            # display name
-    attributes: dict[str, str] = field(default_factory=dict)  # key-value pairs
+    id: str
+    type: str
+    name: str
+    attributes: dict[str, str] = field(default_factory=dict)
+    source_type: str = "web"
+    source_ref: str = ""
+    source_title: str = ""
+    turn_id: int = 0
     last_updated: float = 0.0
 
     def merge(self, other: "Entity") -> None:
-        """Merge another entity's attributes into this one (newer wins)."""
-        self.attributes.update(other.attributes)
-        self.name = other.name or self.name
-        self.type = other.type or self.type
-        self.last_updated = max(self.last_updated, other.last_updated)
+        old_pri = SOURCE_PRIORITY.get(self.source_type, 0)
+        new_pri = SOURCE_PRIORITY.get(other.source_type, 0)
+        if new_pri > old_pri or (new_pri == old_pri and other.turn_id >= self.turn_id):
+            self.attributes.update(other.attributes)
+            self.name = other.name or self.name
+            self.type = other.type or self.type
+            self.source_type = other.source_type
+            self.source_ref = other.source_ref
+            self.source_title = other.source_title
+            self.turn_id = other.turn_id
+            self.last_updated = other.last_updated
+        else:
+            for k, v in other.attributes.items():
+                if k not in self.attributes:
+                    self.attributes[k] = v
 
     def to_dict(self) -> dict:
         return {
             "id": self.id, "type": self.type, "name": self.name,
-            "attributes": self.attributes, "last_updated": self.last_updated,
+            "attributes": self.attributes,
+            "source_type": self.source_type, "source_ref": self.source_ref,
+            "source_title": self.source_title, "turn_id": self.turn_id,
+            "last_updated": self.last_updated,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Entity":
-        return cls(**d)
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
 class Relation:
-    """A relationship between two entities."""
-    subject: str         # entity id
-    predicate: str       # e.g. "enrolled_in", "scored", "authored", "is_part_of"
-    object: str          # entity id or literal value
-    detail: str = ""     # optional extra info
+    subject: str
+    predicate: str
+    object: str
+    detail: str = ""
+    source_type: str = "web"
+    source_ref: str = ""
+    source_title: str = ""
+    turn_id: int = 0
     last_updated: float = 0.0
 
     @property
@@ -88,55 +97,67 @@ class Relation:
         return {
             "subject": self.subject, "predicate": self.predicate,
             "object": self.object, "detail": self.detail,
+            "source_type": self.source_type, "source_ref": self.source_ref,
+            "source_title": self.source_title, "turn_id": self.turn_id,
             "last_updated": self.last_updated,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Relation":
-        return cls(**d)
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
 class Fact:
-    """A standalone piece of knowledge not tied to a specific entity."""
-    key: str             # normalized topic, e.g. "retake_policy", "python_3.13_release_date"
-    value: str           # the fact itself
-    confidence: str = "stated"  # "stated" (user said), "retrieved" (tool found), "inferred"
+    key: str
+    value: str
+    source_type: str = "web"
+    source_ref: str = ""
+    source_title: str = ""
+    turn_id: int = 0
     last_updated: float = 0.0
 
     def to_dict(self) -> dict:
         return {
             "key": self.key, "value": self.value,
-            "confidence": self.confidence, "last_updated": self.last_updated,
+            "source_type": self.source_type, "source_ref": self.source_ref,
+            "source_title": self.source_title, "turn_id": self.turn_id,
+            "last_updated": self.last_updated,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Fact":
-        return cls(**d)
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 # ── Extraction Prompt ────────────────────────────────────────────────
 
-EXTRACTION_PROMPT = """\
-Extract key knowledge from the conversation below as a JSON object.
+EVIDENCE_EXTRACTION_PROMPT = """\
+Extract key knowledge from the VERIFIED EVIDENCE below as JSON.
+
+This evidence comes from {source_type_label}. Every fact you extract is backed by real sources.
+Treat all information as VERIFIED.
 
 Format:
 {{
-  "entities": [{{"id": "snake_case", "type": "person|org|software|policy|course|location|event|other", "name": "Name", "attributes": {{"key": "value"}}}}],
+  "entities": [{{"id": "snake_case", "type": "person|org|software|policy|location|event|other", "name": "Name", "attributes": {{"key": "value"}}}}],
   "relations": [{{"subject": "id", "predicate": "verb", "object": "id_or_value", "detail": ""}}],
-  "facts": [{{"key": "topic", "value": "concise fact", "confidence": "stated|retrieved|inferred"}}]
+  "facts": [{{"key": "topic_snake_case", "value": "concise factual statement"}}]
 }}
 
-CRITICAL rules:
-- Max 10 entities, max 10 relations, max 10 facts per extraction.
-- Per entity: max 5 attributes. Combine related scores into one attribute.
-- Keep total JSON under 800 tokens. Be concise but thorough.
-- Same language as conversation. Merge with existing knowledge (don't duplicate).
+RULES:
+- Max 10 entities, 10 relations, 10 facts.
+- Per entity: max 5 attributes.
+- Extract ONLY factual claims present in the evidence. Do NOT infer or speculate.
+- Include specific numbers, dates, percentages when present in evidence.
+- Same language as the evidence. Be concise but thorough.
 - Return ONLY JSON, no markdown fences, no explanation.
-- If nothing new: {{"entities":[],"relations":[],"facts":[]}}
+- If nothing extractable: {{"entities":[],"relations":[],"facts":[]}}
 {existing_knowledge_block}
-Conversation:
-{conversation_text}
+User question: {user_question}
+
+Verified evidence ({source_type_label}):
+{evidence_text}
 
 JSON:"""
 
@@ -145,27 +166,29 @@ JSON:"""
 
 class FactStore:
     """
-    Lightweight knowledge graph for a conversation session.
+    Evidence-only knowledge graph.
 
-    Stores entities, relations, and facts extracted from conversation turns.
-    Persists via MemoryBankBase alongside ConversationMemory.
+    TRUST MODEL:
+    - Only extract facts from verified evidence (web, RAG, API)
+    - Never from LLM output or user claims
+    - Each fact carries source provenance
+    - Newer verified facts replace older conflicting ones
     """
 
     def __init__(self, bank: MemoryBankBase, session_id: str):
         self._bank = bank
         self.session_id = session_id
-        self.entities: dict[str, Entity] = {}      # id → Entity
-        self.relations: dict[str, Relation] = {}    # key → Relation
-        self.facts: dict[str, Fact] = {}            # key → Fact
+        self.entities: dict[str, Entity] = {}
+        self.relations: dict[str, Relation] = {}
+        self.facts: dict[str, Fact] = {}
         self._extraction_count: int = 0
 
     # ── Persistence ──
 
     def load(self) -> None:
-        """Load from memory bank."""
         data = self._bank.get(f"facts:{self.session_id}")
         if data is None:
-            log.info("[facts:%s] New session (no prior facts).", self.session_id)
+            log.info("[facts:%s] New session.", self.session_id)
             return
         for e in data.get("entities", []):
             ent = Entity.from_dict(e)
@@ -177,13 +200,10 @@ class FactStore:
             fact = Fact.from_dict(f)
             self.facts[fact.key] = fact
         self._extraction_count = data.get("extraction_count", 0)
-        log.info(
-            "[facts:%s] Loaded: %d entities, %d relations, %d facts",
-            self.session_id, len(self.entities), len(self.relations), len(self.facts),
-        )
+        log.info("[facts:%s] Loaded: %dE %dR %dF",
+                 self.session_id, len(self.entities), len(self.relations), len(self.facts))
 
     def save(self) -> None:
-        """Persist to memory bank."""
         data = {
             "session_id": self.session_id,
             "entities": [e.to_dict() for e in self.entities.values()],
@@ -193,41 +213,46 @@ class FactStore:
             "updated_at": time.time(),
         }
         self._bank.put(f"facts:{self.session_id}", data)
-        log.debug("[facts:%s] Saved.", self.session_id)
 
-    # ── Extraction ──
+    # ── Evidence-Based Extraction ──
 
-    def extract(
+    def extract_from_evidence(
         self,
         llm_client: Any,
         model: str,
-        conversation_text: str,
+        evidence_text: str,
+        source_type: str,
+        sources: list[dict] | None = None,
+        user_question: str = "",
+        turn_id: int = 0,
         max_tokens: int = 16384,
         extra_body: dict | None = None,
     ) -> dict:
-        """
-        Extract entities/relations/facts from conversation text using LLM.
+        """Extract facts from VERIFIED evidence only."""
+        if not evidence_text or not evidence_text.strip():
+            log.info("[facts:%s] No evidence (turn %d), skipping.", self.session_id, turn_id)
+            return {"entities": 0, "relations": 0, "facts": 0}
 
-        Args:
-            llm_client: OpenAI-compatible client
-            model: Model name
-            conversation_text: Recent turn(s) to extract from
-            max_tokens: Max tokens for extraction response
+        source_labels = {
+            "web": "web search results",
+            "rag": "internal document search (RAG)",
+            "api": "internal API data",
+        }
+        source_type_label = source_labels.get(source_type, source_type)
 
-        Returns:
-            Dict with counts: {"entities": N, "relations": N, "facts": N}
-        """
         existing_block = ""
         if self.entities or self.facts:
-            existing_block = f"Existing knowledge (update/merge, don't duplicate):\n{self.to_context_string()}\n"
+            existing_block = f"\nExisting knowledge (update/merge, don't duplicate):\n{self.to_context_string()}\n"
 
-        prompt = EXTRACTION_PROMPT.format(
+        prompt = EVIDENCE_EXTRACTION_PROMPT.format(
+            source_type_label=source_type_label,
             existing_knowledge_block=existing_block,
-            conversation_text=conversation_text,
+            user_question=user_question,
+            evidence_text=evidence_text[:6000],
         )
 
-        log.info("[facts:%s] Extracting from %d chars of conversation...",
-                 self.session_id, len(conversation_text))
+        log.info("[facts:%s] Extracting from %s evidence (%d chars, turn %d)",
+                 self.session_id, source_type, len(evidence_text), turn_id)
 
         raw = ""
         try:
@@ -243,44 +268,54 @@ class FactStore:
                 extra_body=no_think_extra_body(extra_body),
             )
             raw = resp.choices[0].message.content.strip()
-            log.debug("[facts:%s] Raw LLM output (%d chars): %s",
-                      self.session_id, len(raw), raw[:300])
 
-            # Extract JSON from potentially messy output (handles thinking text, fences, etc.)
             cleaned = extract_json(raw)
             if not cleaned:
-                log.warning("[facts:%s] No JSON found in LLM output", self.session_id)
+                log.warning("[facts:%s] No JSON in extraction output", self.session_id)
                 return {"entities": 0, "relations": 0, "facts": 0}
 
             extracted = json_repair.loads(cleaned)
         except json.JSONDecodeError as exc:
-            log.error("[facts:%s] Failed to parse extraction JSON: %s\nRaw (%d chars): %s",
-                      self.session_id, exc, len(raw), raw[:500])
+            log.error("[facts:%s] JSON parse failed: %s", self.session_id, exc)
             return {"entities": 0, "relations": 0, "facts": 0}
         except Exception as exc:
-            log.error("[facts:%s] Extraction LLM call failed: %s", self.session_id, exc, exc_info=True)
+            log.error("[facts:%s] Extraction failed: %s", self.session_id, exc, exc_info=True)
             return {"entities": 0, "relations": 0, "facts": 0}
 
-        counts = self._merge(extracted)
+        # Default source ref from first source
+        default_ref = ""
+        default_title = ""
+        if sources:
+            default_ref = sources[0].get("url", "")
+            default_title = sources[0].get("title", "")
+
+        counts = self._merge_evidence(
+            extracted, source_type=source_type,
+            source_ref=default_ref, source_title=default_title,
+            turn_id=turn_id,
+        )
         self._extraction_count += 1
-        log.info("[facts:%s] Extracted: +%d entities, +%d relations, +%d facts (total: %d/%d/%d)",
+
+        log.info("[facts:%s] +%dE +%dR +%dF (total: %d/%d/%d, src=%s, turn=%d)",
                  self.session_id,
                  counts["entities"], counts["relations"], counts["facts"],
-                 len(self.entities), len(self.relations), len(self.facts))
+                 len(self.entities), len(self.relations), len(self.facts),
+                 source_type, turn_id)
         return counts
 
-    def _merge(self, extracted: dict) -> dict:
-        """Merge extracted data into existing store. Returns counts of new/updated items."""
+    def _merge_evidence(self, extracted: dict, source_type: str,
+                        source_ref: str, source_title: str, turn_id: int) -> dict:
         now = time.time()
         counts = {"entities": 0, "relations": 0, "facts": 0}
 
         for e_raw in extracted.get("entities", []):
             try:
                 e = Entity(
-                    id=e_raw["id"],
-                    type=e_raw.get("type", "other"),
+                    id=e_raw["id"], type=e_raw.get("type", "other"),
                     name=e_raw.get("name", e_raw["id"]),
                     attributes=e_raw.get("attributes", {}),
+                    source_type=source_type, source_ref=source_ref,
+                    source_title=source_title, turn_id=turn_id,
                     last_updated=now,
                 )
                 if e.id in self.entities:
@@ -289,73 +324,83 @@ class FactStore:
                     self.entities[e.id] = e
                 counts["entities"] += 1
             except (KeyError, TypeError) as exc:
-                log.debug("[facts] Skipping malformed entity: %s", exc)
+                log.debug("[facts] Bad entity: %s", exc)
 
         for r_raw in extracted.get("relations", []):
             try:
                 r = Relation(
-                    subject=r_raw["subject"],
-                    predicate=r_raw["predicate"],
-                    object=r_raw["object"],
-                    detail=r_raw.get("detail", ""),
+                    subject=r_raw["subject"], predicate=r_raw["predicate"],
+                    object=r_raw["object"], detail=r_raw.get("detail", ""),
+                    source_type=source_type, source_ref=source_ref,
+                    source_title=source_title, turn_id=turn_id,
                     last_updated=now,
                 )
-                self.relations[r.key] = r  # overwrite if same key
+                existing = self.relations.get(r.key)
+                if existing:
+                    old_pri = SOURCE_PRIORITY.get(existing.source_type, 0)
+                    new_pri = SOURCE_PRIORITY.get(r.source_type, 0)
+                    if new_pri > old_pri or (new_pri == old_pri and r.turn_id >= existing.turn_id):
+                        self.relations[r.key] = r
+                else:
+                    self.relations[r.key] = r
                 counts["relations"] += 1
             except (KeyError, TypeError) as exc:
-                log.debug("[facts] Skipping malformed relation: %s", exc)
+                log.debug("[facts] Bad relation: %s", exc)
 
         for f_raw in extracted.get("facts", []):
             try:
                 f = Fact(
-                    key=f_raw["key"],
-                    value=f_raw["value"],
-                    confidence=f_raw.get("confidence", "stated"),
+                    key=f_raw["key"], value=f_raw["value"],
+                    source_type=source_type, source_ref=source_ref,
+                    source_title=source_title, turn_id=turn_id,
                     last_updated=now,
                 )
-                self.facts[f.key] = f  # overwrite if same key
+                existing = self.facts.get(f.key)
+                if existing:
+                    old_pri = SOURCE_PRIORITY.get(existing.source_type, 0)
+                    new_pri = SOURCE_PRIORITY.get(f.source_type, 0)
+                    if new_pri > old_pri or (new_pri == old_pri and f.turn_id >= existing.turn_id):
+                        log.info("[facts:%s] REPLACE '%s': '%s'(%s,t%d) → '%s'(%s,t%d)",
+                                 self.session_id, f.key,
+                                 existing.value[:50], existing.source_type, existing.turn_id,
+                                 f.value[:50], f.source_type, f.turn_id)
+                        self.facts[f.key] = f
+                else:
+                    self.facts[f.key] = f
                 counts["facts"] += 1
             except (KeyError, TypeError) as exc:
-                log.debug("[facts] Skipping malformed fact: %s", exc)
+                log.debug("[facts] Bad fact: %s", exc)
 
         return counts
 
     # ── Context Building ──
 
     def to_context_string(self) -> str:
-        """
-        Format stored knowledge as a string for prompt injection.
-
-        This is Tier-1 context — structured, NEVER compressed, NEVER truncated.
-        """
         if not self.entities and not self.relations and not self.facts:
             return ""
 
         parts = []
 
-        # Entities
         if self.entities:
-            ent_lines = []
+            lines = []
             for e in sorted(self.entities.values(), key=lambda x: x.last_updated, reverse=True):
                 attrs = ", ".join(f"{k}={v}" for k, v in e.attributes.items())
                 attr_str = f" ({attrs})" if attrs else ""
-                ent_lines.append(f"- {e.name} [{e.type}]{attr_str}")
-            parts.append("[Known entities]\n" + "\n".join(ent_lines))
+                lines.append(f"- {e.name} [{e.type}]{attr_str} [{e.source_type}]")
+            parts.append("[Verified entities]\n" + "\n".join(lines))
 
-        # Relations
         if self.relations:
-            rel_lines = []
+            lines = []
             for r in sorted(self.relations.values(), key=lambda x: x.last_updated, reverse=True):
                 detail = f" — {r.detail}" if r.detail else ""
-                rel_lines.append(f"- {r.subject} → {r.predicate} → {r.object}{detail}")
-            parts.append("[Known relations]\n" + "\n".join(rel_lines))
+                lines.append(f"- {r.subject} → {r.predicate} → {r.object}{detail} [{r.source_type}]")
+            parts.append("[Verified relations]\n" + "\n".join(lines))
 
-        # Facts
         if self.facts:
-            fact_lines = []
+            lines = []
             for f in sorted(self.facts.values(), key=lambda x: x.last_updated, reverse=True):
-                fact_lines.append(f"- {f.key}: {f.value}")
-            parts.append("[Known facts]\n" + "\n".join(fact_lines))
+                lines.append(f"- {f.key}: {f.value} [{f.source_type}]")
+            parts.append("[Verified facts]\n" + "\n".join(lines))
 
         return "\n\n".join(parts)
 
@@ -365,31 +410,24 @@ class FactStore:
             "relations": len(self.relations),
             "facts": len(self.facts),
             "extractions": self._extraction_count,
-            "context_chars": len(self.to_context_string()),
-            "context_tokens_est": len(self.to_context_string()) // 4,
         }
 
     def clear(self) -> None:
-        """Reset all knowledge."""
         self.entities.clear()
         self.relations.clear()
         self.facts.clear()
         self._extraction_count = 0
         self.save()
 
-    # ── Query helpers ──
-
     def get_entity(self, entity_id: str) -> Entity | None:
         return self.entities.get(entity_id)
 
     def find_entities(self, type_filter: str = "") -> list[Entity]:
-        """Find entities, optionally filtered by type."""
         if not type_filter:
             return list(self.entities.values())
         return [e for e in self.entities.values() if e.type == type_filter]
 
     def get_relations_for(self, entity_id: str) -> list[Relation]:
-        """Get all relations where entity is subject or object."""
         return [
             r for r in self.relations.values()
             if r.subject == entity_id or r.object == entity_id

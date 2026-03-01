@@ -10,7 +10,7 @@ from crewai import Agent, Crew, Task, LLM
 
 from .config import AppConfig
 from .tool_context import set_tool_config
-from .llm_utils import strip_think_tags
+from .llm_utils import strip_think_tags, extract_json
 from .tools.web_tools import web_search_deep, web_crawl_url, web_search_then_crawl, web_search_expanded
 from .tools.student_tools import student_get_profile, student_get_grades, student_get_attendance
 from .tools.rag_tools import rag_query_policy
@@ -469,34 +469,137 @@ def run_crew_with_memory(
     memory.add_assistant_turn(clean_answer, routes=routes)
     _status("💾 Saving to memory...")
 
-    # 5. Extract facts from this turn pair (uses clean turns from memory)
-    if memory.facts:
-        _status("🧠 Extracting facts...")
+    # 5. Extract facts from VERIFIED EVIDENCE (not from LLM output)
+    #    Only when routes include evidence sources (web, rag, api)
+    evidence_routes = [r for r in routes if r in ("web", "policy_rag", "student")]
+    if memory.facts and evidence_routes:
+        _status("🧠 Extracting facts from evidence...")
         try:
-            from openai import OpenAI
-            oai = OpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key or "no-key")
-            model = cfg.llm.model
-            if model.startswith("openai/"):
-                model = model[len("openai/"):]
-            extra = get_llm_extra_body(cfg)
-            fact_counts = memory.extract_facts(llm_client=oai, model=model, extra_body=extra,
-                                                max_tokens=cfg.llm.structured_max_tokens)
-            log.info("[run_crew_with_memory] Facts extracted: %s", fact_counts)
-            _status(f"🧠 Facts: +{fact_counts.get('entities',0)}E +{fact_counts.get('relations',0)}R +{fact_counts.get('facts',0)}F")
+            # Get task outputs from CrewAI result
+            crew_result = None
+            if use_stream:
+                try:
+                    if streaming.is_completed and streaming._result is not None:
+                        crew_result = streaming.result
+                except Exception:
+                    pass
+            else:
+                crew_result = result  # noqa: F821 — assigned in else branch above
+
+            evidence_text, evidence_sources, evidence_source_type = _extract_evidence(crew_result, routes)
+
+            if evidence_text:
+                from openai import OpenAI
+                oai = OpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key or "no-key")
+                model = cfg.llm.model
+                if model.startswith("openai/"):
+                    model = model[len("openai/"):]
+                extra = get_llm_extra_body(cfg)
+                fact_counts = memory.extract_facts_from_evidence(
+                    llm_client=oai, model=model,
+                    evidence_text=evidence_text,
+                    source_type=evidence_source_type,
+                    sources=evidence_sources,
+                    user_question=enriched.get("user_query", ""),
+                    extra_body=extra,
+                    max_tokens=cfg.llm.structured_max_tokens,
+                )
+                log.info("[run_crew_with_memory] Evidence facts: %s", fact_counts)
+                _status(f"🧠 Facts: +{fact_counts.get('entities',0)}E +{fact_counts.get('relations',0)}R +{fact_counts.get('facts',0)}F")
+            else:
+                log.info("[run_crew_with_memory] No evidence text found in task outputs")
+                _status("🧠 No evidence to extract facts from")
         except Exception as exc:
-            log.error("[run_crew_with_memory] ⚠️ Fact extraction FAILED: %s", exc, exc_info=True)
+            log.error("[run_crew_with_memory] ⚠️ Evidence fact extraction FAILED: %s", exc, exc_info=True)
             _status("⚠️ Fact extraction failed")
+    elif not evidence_routes:
+        log.info("[run_crew_with_memory] routes=%s — no evidence sources, skipping fact extraction", routes)
 
     # 6. Persist
     memory.save()
     _status("✅ Done")
 
-    # 6. Persist
-    memory.save()
-
     log.info("[run_crew_with_memory] Done. Answer %d chars (clean %d). Stats: %s",
              len(raw_answer), len(clean_answer), memory.get_stats())
-    return clean_answer  # stripped of think tags + "Final Answer:" prefix for display
+    return clean_answer
+
+
+def _extract_evidence(crew_result, routes: list[str]) -> tuple[str, list[dict], str]:
+    """Extract raw evidence text + sources from CrewAI task outputs.
+
+    Returns:
+        (evidence_text, sources_list, source_type)
+        evidence_text: Raw evidence from web/rag/api tasks (NOT composer)
+        sources_list: List of {"id": "S1", "url": "...", "title": "..."} if available
+        source_type: "web" | "rag" | "api"
+    """
+    if crew_result is None or not hasattr(crew_result, "tasks_output"):
+        return "", [], "web"
+
+    # Map agent names to source types
+    agent_source_map = {
+        "web researcher": "web",
+        "web_researcher": "web",
+        "student data fetcher": "api",
+        "student_data": "api",
+        "policy/rag specialist": "rag",
+        "policy_rag": "rag",
+    }
+
+    evidence_parts = []
+    all_sources = []
+    source_type = "web"  # default
+
+    for task_output in crew_result.tasks_output:
+        agent_name = (task_output.agent or "").lower().strip()
+
+        # Skip composer — that's LLM synthesis, not evidence
+        if "composer" in agent_name or "answer" in agent_name:
+            continue
+
+        # Match to source type
+        matched_type = None
+        for key, stype in agent_source_map.items():
+            if key in agent_name:
+                matched_type = stype
+                break
+
+        if matched_type is None:
+            # Also check by route: if only "web" in routes and not composer, it's likely web
+            if "router" in agent_name:
+                continue  # skip router output
+            continue
+
+        raw = task_output.raw or ""
+        if not raw.strip():
+            continue
+
+        source_type = matched_type
+        evidence_parts.append(raw)
+
+        # Try to parse sources from JSON evidence (web_result format)
+        try:
+            # Strip "Final Answer:" prefix if present
+            clean = raw.strip()
+            if clean.startswith("Final Answer:"):
+                clean = clean[len("Final Answer:"):].strip()
+
+            parsed = json_repair.loads(extract_json(clean) or clean)
+            if isinstance(parsed, dict) and "sources" in parsed:
+                for s in parsed["sources"]:
+                    if isinstance(s, dict):
+                        all_sources.append({
+                            "id": s.get("id", ""),
+                            "url": s.get("url", ""),
+                            "title": s.get("title", ""),
+                        })
+        except Exception:
+            pass  # Not JSON — still use raw text as evidence
+
+    evidence_text = "\n\n".join(evidence_parts)
+    log.info("[_extract_evidence] Found %d evidence parts (%d chars), %d sources, type=%s",
+             len(evidence_parts), len(evidence_text), len(all_sources), source_type)
+    return evidence_text, all_sources, source_type
 
 
 def make_openai_client(cfg: AppConfig):
