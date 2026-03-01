@@ -1,15 +1,31 @@
+# Secrets
+.env
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.env
 *.egg-info/
 dist/
 build/
 .venv/
 venv/
+
+# Data (runtime generated)
 data/memory/
 *.jsonl
 *.log
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Models
 *.gguf
 *.bin
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
