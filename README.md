@@ -197,8 +197,6 @@ Images are injected at the lowest possible layer: a one-time monkey-patch on `li
 ]}
 ```
 
-**Zero changes** to agents, tasks, tools, or CrewAI internals. The patch is invisible — when no images are present, it's a no-op.
-
 ### CLI — Two Ways to Send Images
 
 ```bash
