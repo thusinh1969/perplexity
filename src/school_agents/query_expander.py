@@ -40,8 +40,11 @@ log = logging.getLogger("school_agents.query_expander")
 EXPAND_PROMPT = """\
 {today}
 
-You are a search query optimizer. Given a user's question, generate exactly 3 search queries \
+You are a search query optimizer. Given a user's question and conversation context, generate exactly 3 search queries \
 that together will find the most comprehensive and accurate answer from the web.
+
+CONVERSATION CONTEXT (use this to understand what the user is referring to):
+{conversation_context}
 
 STRICT RULES:
 1. Query 1: An ENGLISH search query — precise, well-formed, using standard search terms. \
@@ -50,6 +53,14 @@ STRICT RULES:
    This captures local-language sources and perspectives.
 3. Query 3: An ENGLISH query from a different angle — analytical, comparative, or predictive. \
    Example: if user asks about a war, this could be "expert analysis [topic] forecast".
+
+CONTEXT-AWARE EXPANSION (CRITICAL):
+- If the user's question references something from previous turns (pronouns like "it", "this", "that", \
+  or short follow-ups like "price?", "where to buy?"), you MUST resolve the reference using conversation context.
+- Example: if previous turns discussed "Prospan cough syrup" and user asks "Price in Vietnam?", \
+  ALL 3 queries must include "Prospan" — never generate generic "price in Vietnam" queries.
+- Example: if previous turns discussed "FPT stock" and user asks "What about FTEL?", \
+  queries must be about "FTEL FPT Telecom Vietnam", not generic FTEL.
 
 ENTITY DISAMBIGUATION (CRITICAL):
 - When the query mentions a specific entity (company, person, stock ticker, product, place), \
@@ -76,6 +87,9 @@ User: "Tình hình chiến tranh Mỹ Iran thế nào?"
 
 User: "Bitcoin giá bao nhiêu?"
 → ["Bitcoin price today March 2026 USD", "giá Bitcoin hôm nay", "Bitcoin price prediction short term analysis"]
+
+Context discussed Prospan cough syrup, user asks: "Mua ở đâu giá rẻ nhất?"
+→ ["Prospan cough syrup cheapest price pharmacy 2026", "mua Prospan siro ho giá rẻ nhất ở đâu", "Prospan ivy leaf syrup price comparison online pharmacy"]
 
 User question: {user_query}
 
@@ -106,12 +120,13 @@ class QueryExpander:
         self._extra_body = extra_body or {}
         self._max_tokens = max_tokens
 
-    def expand(self, user_query: str, progress_callback=None) -> list[str]:
+    def expand(self, user_query: str, conversation_context: str = "", progress_callback=None) -> list[str]:
         """
         Generate expanded search queries from user's question.
 
         Args:
             user_query: Original user question
+            conversation_context: Previous conversation context (facts, turns) for reference resolution
             progress_callback: Optional callable(token_count: int) called during streaming
                                to show progress. If None, no progress shown.
 
@@ -124,7 +139,13 @@ class QueryExpander:
         _now = _dt.now(_ZI("Asia/Ho_Chi_Minh"))
         date_context = f"Today is {_now:%A, %B %d, %Y}."
 
-        prompt = EXPAND_PROMPT.format(user_query=user_query, today=date_context)
+        # Truncate context to avoid overwhelming the expander (keep most recent/relevant)
+        ctx_for_prompt = conversation_context[:2000] if conversation_context else "No previous conversation."
+
+        prompt = EXPAND_PROMPT.format(
+            user_query=user_query, today=date_context,
+            conversation_context=ctx_for_prompt,
+        )
 
         log.info("[expander] Expanding query: %r", user_query)
         t0 = time.perf_counter()

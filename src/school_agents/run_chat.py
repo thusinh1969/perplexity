@@ -150,19 +150,45 @@ def _run_one_turn(
     """Execute a single conversation turn with memory and optional query expansion."""
     log = logging.getLogger("school_agents.run_chat")
 
+    # 0. If images attached, analyze them FIRST so we know what they contain
+    #    This enriches the query BEFORE routing, expansion, and search.
+    image_analysis = ""
+    if images:
+        try:
+            from .crew_runner import _analyze_images_direct
+            if status_callback:
+                status_callback("🖼️ Analyzing image(s)...")
+            image_analysis = _analyze_images_direct(cfg, images, query)
+            if image_analysis:
+                log.info("[vision] Image pre-analysis: %d chars", len(image_analysis))
+                if status_callback:
+                    status_callback(f"🖼️ Image analyzed ({len(image_analysis)} chars)")
+        except Exception as exc:
+            log.error("[vision] Image analysis failed: %s", exc, exc_info=True)
+            print(f"[DEBUG] Image analysis FAILED: {type(exc).__name__}: {exc}", flush=True)
+            if status_callback:
+                status_callback("⚠️ Image analysis failed")
+
+    # Build enriched query: original question + image description (if any)
+    enriched_query = query
+    if image_analysis:
+        enriched_query = f"{query}\n\n[Image Analysis — VLM saw the raw image]\n{image_analysis}"
+
     # 1. Record user turn (note images in memory, NOT the base64)
     turn_text = query
     if images:
         turn_text += f" [📎 {len(images)} image(s) attached]"
+    if image_analysis:
+        turn_text += f"\n[Image: {image_analysis[:200]}...]"
     memory.add_user_turn(turn_text)
 
     # 2. Build context for routing
-    context = memory.build_context(current_query=query)
+    context = memory.build_context(current_query=enriched_query)
 
-    # 3. Route
+    # 3. Route (uses enriched query so router knows image content)
     t0 = time.perf_counter()
     routing = route(
-        cfg, query, student_id, from_date, to_date,
+        cfg, enriched_query, student_id, from_date, to_date,
         conversation_context=context,
     )
     routes = routing.get("routes")
@@ -173,17 +199,18 @@ def _run_one_turn(
     if not routes:
         log.info("💬 Conversation-only mode (no web search, no expansion)")
 
-    # 4. Query expansion (only for web routes)
+    # 4. Query expansion (only for web routes, uses enriched query)
     expanded_context = ""
     mc = cfg.memory
     if "web" in routes and mc.expand_enabled:
         expanded_context = _handle_query_expansion(
-            cfg, query, interactive=interactive,
+            cfg, enriched_query, interactive=interactive,
+            conversation_context=context,
         )
 
-    # 5. Run crew with memory
+    # 5. Run crew with memory (image analysis already in enriched_query)
     inputs = {
-        "user_query": query,
+        "user_query": enriched_query,
         "student_id": student_id,
         "from_date": from_date,
         "to_date": to_date,
@@ -192,13 +219,12 @@ def _run_one_turn(
 
     # If we got pre-expanded results, inject them
     if expanded_context:
-        inputs["user_query"] = f"{query}\n\n[Pre-searched results]\n{expanded_context}"
+        inputs["user_query"] = f"{enriched_query}\n\n[Pre-searched results]\n{expanded_context}"
 
     t1 = time.perf_counter()
     answer = run_crew_with_memory(cfg, routes, inputs, memory,
                                   stream_callback=stream_callback,
-                                  status_callback=status_callback,
-                                  images=images)
+                                  status_callback=status_callback)
     log.info("Crew done in %.1fs", time.perf_counter() - t1)
 
     return answer
@@ -208,6 +234,7 @@ def _handle_query_expansion(
     cfg,
     user_query: str,
     interactive: bool = False,
+    conversation_context: str = "",
 ) -> str:
     """
     Handle query expansion: expand → optionally confirm → search → return merged results.
@@ -234,11 +261,13 @@ def _handle_query_expansion(
                 print(".", end="", flush=True)
             expanded = expand_queries_only(user_query, oai, model, extra_body=extra,
                                            progress_callback=_progress,
-                                           max_tokens=cfg.llm.structured_max_tokens)
+                                           max_tokens=cfg.llm.structured_max_tokens,
+                                           conversation_context=conversation_context)
             print(" done!", flush=True)
         else:
             expanded = expand_queries_only(user_query, oai, model, extra_body=extra,
-                                           max_tokens=cfg.llm.structured_max_tokens)
+                                           max_tokens=cfg.llm.structured_max_tokens,
+                                           conversation_context=conversation_context)
 
         if len(expanded) <= 1:
             log.warning("[expand] Expansion failed — got only original query back")

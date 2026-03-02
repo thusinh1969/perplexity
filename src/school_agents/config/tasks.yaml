@@ -11,7 +11,7 @@ route_task:
     \  - Explanations of stable concepts (history, theory, definitions)\n  KEY TEST A (Freshness): Would the answer likely\
     \ change with today's date, latest news, live stats, prices, schedules?\n  KEY TEST B (Verification): Did the user explicitly\
     \ ask for sources/links/citations/\"verify\"?\n  If A=NO and B=NO → routes=[]\n\nSTEP 2 — WEB SEARCH NEEDED? → routes=[\"\
-    web\"]\n  COMMENTARY: Only search when freshness or verification matters.\n  Trigger web if ANY of the following is true:\n\
+    web\"]\n  COMMENTARY: We are in Vietnam by default so everything must start with Vietnam focus, unless user request anither country or international information provided. Only search when freshness or verification matters.\n  Trigger web if ANY of the following is true:\n\
     \  - Time-sensitive / live: \"hôm nay\", \"hiện tại\", \"bây giờ\", \"mới nhất\", \"latest\", \"this week\", \"72h tới\"\
     \n  - News/events/politics/economy/markets/security/incidents\n  - Prices/rates/availability/opening hours/schedules/rankings\
     \ \"best/top\" / \"near me\"\n  - \"ai đang là...\", \"current CEO/president\", \"phiên bản mới nhất\", \"release date\"\

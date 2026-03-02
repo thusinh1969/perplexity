@@ -286,7 +286,6 @@ def run_crew_with_memory(
     memory: Any,  # ConversationMemory (import at runtime to avoid circular)
     stream_callback: Any = None,  # callable(chunk) — called for each streaming chunk
     status_callback: Any = None,  # callable(msg) — called for status updates (e.g. "Extracting facts...")
-    images: list[dict] | None = None,  # [{"b64": str, "mime": str}, ...] for vision
 ) -> str:
     """
     Run crew with multi-turn conversation context.
@@ -332,24 +331,6 @@ def run_crew_with_memory(
 
     # 3. Run crew (streaming or blocking)
     # ── Vision: direct VLM call with base64 → inject analysis as text ──
-    print(f"[DEBUG] run_crew_with_memory: images={'None' if images is None else f'{len(images)} items'}", flush=True)
-    if images:
-        _status("🖼️ Analyzing image(s)...")
-        try:
-            image_analysis = _analyze_images_direct(cfg, images, inputs.get("user_query", ""))
-            if image_analysis:
-                enriched["user_query"] = (
-                    enriched["user_query"]
-                    + "\n\n[Image Analysis — VLM saw the raw image]\n"
-                    + image_analysis
-                )
-                log.info("[vision] Direct VLM analysis: %d chars", len(image_analysis))
-                _status(f"🖼️ Image analyzed ({len(image_analysis)} chars)")
-        except Exception as exc:
-            log.error("[vision] Direct VLM call failed: %s", exc, exc_info=True)
-            print(f"[DEBUG] Image analysis FAILED: {type(exc).__name__}: {exc}", flush=True)
-            _status("⚠️ Image analysis failed")
-
     use_stream = stream_callback is not None
     crew = _build_crew(cfg, routes, stream=use_stream)
 

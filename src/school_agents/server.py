@@ -121,7 +121,7 @@ async def _encode_uploads(files: list[UploadFile]) -> list[dict]:
 
 # ── Query expansion (auto mode — no user confirmation) ────────────────
 
-def _expand_and_search(query: str) -> str:
+def _expand_and_search(query: str, conversation_context: str = "") -> str:
     mc = CFG.memory
     if not mc.expand_enabled:
         return ""
@@ -131,6 +131,7 @@ def _expand_and_search(query: str) -> str:
         expanded = expand_queries_only(
             query, _oai, _model, extra_body=_extra,
             max_tokens=CFG.llm.structured_max_tokens,
+            conversation_context=conversation_context,
         )
         if len(expanded) <= 1:
             return ""
@@ -170,39 +171,54 @@ def _execute_turn(
     t0 = time.perf_counter()
     memory = _get_memory(session_id)
 
+    # Analyze images FIRST (before routing/expansion)
+    image_analysis = ""
+    if images:
+        try:
+            from .crew_runner import _analyze_images_direct
+            image_analysis = _analyze_images_direct(CFG, images, query)
+            log.info("[server:vision] Image analyzed: %d chars", len(image_analysis))
+        except Exception as exc:
+            log.error("[server:vision] Image analysis failed: %s", exc)
+
+    enriched_query = query
+    if image_analysis:
+        enriched_query = f"{query}\n\n[Image Analysis — VLM saw the raw image]\n{image_analysis}"
+
     # Record user turn
     turn_text = query + (f" [📎 {len(images)} image(s)]" if images else "")
+    if image_analysis:
+        turn_text += f"\n[Image: {image_analysis[:200]}...]"
     memory.add_user_turn(turn_text)
 
-    # Route
-    context = memory.build_context(current_query=query)
-    routing = route(CFG, query, student_id, from_date, to_date,
+    # Route (uses enriched query)
+    context = memory.build_context(current_query=enriched_query)
+    routing = route(CFG, enriched_query, student_id, from_date, to_date,
                     conversation_context=context)
     routes = routing.get("routes")
     if routes is None:
         routes = ["web"]
 
-    # Query expansion (auto)
+    # Query expansion (auto, uses enriched query)
     expanded_ctx = ""
     if "web" in routes:
-        expanded_ctx = _expand_and_search(query)
+        expanded_ctx = _expand_and_search(enriched_query, conversation_context=context)
 
     # Build inputs
     inputs = {
-        "user_query": query,
+        "user_query": enriched_query,
         "student_id": student_id,
         "from_date": from_date,
         "to_date": to_date,
         "policy_domain": routing.get("policy_domain", "other"),
     }
     if expanded_ctx:
-        inputs["user_query"] = f"{query}\n\n[Pre-searched results]\n{expanded_ctx}"
+        inputs["user_query"] = f"{enriched_query}\n\n[Pre-searched results]\n{expanded_ctx}"
 
     # Run crew
     answer = run_crew_with_memory(
         CFG, routes, inputs, memory,
         stream_callback=stream_callback,
-        images=images or None,
     )
 
     _BANK.flush()

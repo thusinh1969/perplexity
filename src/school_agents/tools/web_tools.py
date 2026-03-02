@@ -324,9 +324,11 @@ def expand_queries_only(
     extra_body: dict | None = None,
     progress_callback=None,
     max_tokens: int = 16384,
+    conversation_context: str = "",
 ) -> list[str]:
     """Just expand, don't search. For interactive confirmation flow."""
     from ..query_expander import QueryExpander
     expander = QueryExpander(openai_client=openai_client, model=model,
                              extra_body=extra_body, max_tokens=max_tokens)
-    return expander.expand(user_query, progress_callback=progress_callback)
+    return expander.expand(user_query, conversation_context=conversation_context,
+                           progress_callback=progress_callback)
