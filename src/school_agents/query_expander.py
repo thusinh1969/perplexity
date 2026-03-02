@@ -51,6 +51,18 @@ STRICT RULES:
 3. Query 3: An ENGLISH query from a different angle — analytical, comparative, or predictive. \
    Example: if user asks about a war, this could be "expert analysis [topic] forecast".
 
+ENTITY DISAMBIGUATION (CRITICAL):
+- When the query mentions a specific entity (company, person, stock ticker, product, place), \
+  ALWAYS add disambiguating context to EVERY query to avoid near-name confusion.
+- Infer context from: user's language, conversation topic, domain, country.
+  Examples of disambiguation:
+  - Stock ticker in Vietnamese context → add "Vietnam" or "HOSE" or "HNX"
+  - Company name that exists in multiple countries → add country
+  - Person name → add role/field/context
+  - Medical term → add specialty context
+  - Ambiguous abbreviation → spell out + add context
+- NEVER generate a bare ticker/name that could match a different entity in another market/country/domain.
+
 FORMAT RULES:
 - Each query: 5-12 words. Not too short (vague), not too long (over-specific).
 - Include time context when relevant: add year/month, "latest", "today" for current events.
