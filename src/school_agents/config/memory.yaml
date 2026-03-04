@@ -21,7 +21,7 @@ memory:
   query_expand:
     enabled: true                    # enable multi-query expansion
     mode: "confirm"                  # "auto" (expand silently) | "confirm" (ask user first)
-    max_queries: 3                   # number of expanded queries
+    max_queries: 5                   # number of expanded queries per queries
     max_results_per_query: 5         # results per individual query
 
   # LLMLingua settings (only used when compressor=llmlingua or hybrid)
