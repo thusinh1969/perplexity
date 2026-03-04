@@ -103,7 +103,7 @@ compose_task:
     4. Use ALL relevant evidence. Do not skip important findings.\n5. Date-relative questions: use current date/time from\
     \ context. Example: \"72 giờ tới\" from March 1 = March 1–4.\n6. If evidence is insufficient for part of the question,\
     \ say so honestly.\n7. Do NOT output raw JSON to the user. Write natural, readable prose.\n8. Do NOT make up information\
-    \ not supported by evidence or conversation context.\n\n=== FORMAT EXAMPLE ===\nFinal Answer: ...\n\n**Điểm chính:**\n\
+    \ not supported by evidence or conversation context, DO NOT propose hallucinated URLs, do NOT translate URLs.\n\n=== FORMAT EXAMPLE ===\nFinal Answer: ...\n\n**Điểm chính:**\n\
     1. ... [S1]\n2. ... [S2]\n\nNguồn:\n[S1] <title> — <url>\n[S2] <title> — <url>\n"
   expected_output: 'Final Answer: Complete answer in Vietnamese based on provided evidence + sources.'
   agent: composer
