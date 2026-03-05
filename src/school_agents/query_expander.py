@@ -283,13 +283,17 @@ class QueryExpander:
                 log.warning("[expander] Q%d %r failed: %s", i + 1, q, exc)
                 query_results_map.append([])
 
-        # Reciprocal rank fusion
+        # Reciprocal rank fusion + content dedup
+        url_deduped_count = sum(len(qr) for qr in query_results_map)
         merged = self._reciprocal_rank_fusion(query_results_map, max_results=max_merged_results)
 
         elapsed = time.perf_counter() - t0
         total_raw = sum(len(qr) for qr in query_results_map)
-        log.info("[expander] Fusion done in %.2fs: %d raw → %d merged results",
-                 elapsed, total_raw, len(merged))
+        url_unique = len(set(
+            r.get("url", "") for qr in query_results_map for r in qr if r.get("url")
+        ))
+        log.info("[expander] Fusion done in %.2fs: %d raw → %d url-unique → %d after content-dedup",
+                 elapsed, total_raw, url_unique, len(merged))
 
         return {
             "queries": queries,
@@ -303,6 +307,7 @@ class QueryExpander:
         query_results: list[list[dict]],
         k: int = 60,
         max_results: int = 15,
+        content_sim_threshold: float = 0.55,
     ) -> list[dict]:
         """
         Reciprocal Rank Fusion (RRF) to merge results from multiple queries.
@@ -310,7 +315,9 @@ class QueryExpander:
         Score for each doc = sum over queries of: 1 / (k + rank)
         where k=60 (standard constant), rank is 1-indexed position.
 
-        Deduplicates by URL.
+        Two-level dedup:
+          1. URL-level: exact URL match → merge scores
+          2. Content-level: word Jaccard similarity > threshold → drop lower-scored duplicate
         """
         # url → {score, best_result_dict}
         scored: dict[str, dict[str, Any]] = {}
@@ -319,14 +326,12 @@ class QueryExpander:
             for rank, result in enumerate(results, start=1):
                 url = result.get("url", "")
                 if not url:
-                    # No URL — use title+content hash as key
                     url = f"_no_url_{hash(result.get('title', '') + result.get('content', ''))}"
 
                 rrf_score = 1.0 / (k + rank)
 
                 if url in scored:
                     scored[url]["score"] += rrf_score
-                    # Keep the result with more content
                     existing_content = len(scored[url]["result"].get("content", ""))
                     new_content = len(result.get("content", ""))
                     if new_content > existing_content:
@@ -334,14 +339,39 @@ class QueryExpander:
                 else:
                     scored[url] = {"score": rrf_score, "result": result}
 
-        # Sort by score descending, return top N
+        # Sort by score descending
         ranked = sorted(scored.values(), key=lambda x: x["score"], reverse=True)
 
+        # Content-level dedup: drop near-duplicate content (different URL, same article)
         merged = []
-        for item in ranked[:max_results]:
-            r = item["result"].copy()
-            r["_rrf_score"] = round(item["score"], 6)
-            merged.append(r)
+        for item in ranked:
+            if len(merged) >= max_results:
+                break
+            candidate = item["result"]
+            candidate_text = (candidate.get("title", "") + " " + candidate.get("content", "")).lower()
+            candidate_words = set(candidate_text.split())
+
+            is_dup = False
+            for existing in merged:
+                existing_text = (existing.get("title", "") + " " + existing.get("content", "")).lower()
+                existing_words = set(existing_text.split())
+
+                # Word-level Jaccard similarity
+                if candidate_words and existing_words:
+                    intersection = len(candidate_words & existing_words)
+                    union = len(candidate_words | existing_words)
+                    if union > 0 and intersection / union > content_sim_threshold:
+                        is_dup = True
+                        log.debug("[dedup] Dropped near-dup: %s (sim=%.2f with %s)",
+                                  candidate.get("url", "?")[:60],
+                                  intersection / union,
+                                  existing.get("url", "?")[:60])
+                        break
+
+            if not is_dup:
+                r = candidate.copy()
+                r["_rrf_score"] = round(item["score"], 6)
+                merged.append(r)
 
         return merged
 

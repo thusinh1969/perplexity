@@ -345,7 +345,11 @@ def _handle_query_expansion(
         result_text = "\n".join(lines)
 
         if interactive and mc.expand_mode == "confirm":
-            print(f"   ✅ {len(results)} results merged.\n")
+            total_raw = merged.get("total_raw", len(results))
+            if total_raw > len(results):
+                print(f"   ✅ {total_raw} found → {len(results)} unique results after dedup.\n")
+            else:
+                print(f"   ✅ {len(results)} results merged.\n")
 
         return result_text
 
