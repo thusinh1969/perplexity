@@ -597,6 +597,7 @@ def main():
         print("Commands: quit, stats, facts, clear, expand <query>")
         print("Images:   img:/path/to/photo.jpg what is this?  (multiple: img:a.jpg img:b.png question)\n")
         _pending_images: list[dict] = []  # images from --image flag persist for first turn
+        _last_suggestions: list[str] = []  # follow-up suggestions from last turn
         if args.image:
             for p in args.image:
                 try:
@@ -612,7 +613,34 @@ def main():
                 break
 
             if not query:
+                # Empty enter with suggestions → pick first suggestion
+                if _last_suggestions:
+                    query = _last_suggestions[0]
+                    print(f"  → {query}")
+                    _last_suggestions = []
+                else:
+                    continue
+
+            # ── Follow-up shortcuts ──
+            _accept_patterns = {"yes", "ok", "y", ".", "làm đi", "do it", "tiếp", "go", "sure", "ừ", "ờ", "đi", "được"}
+            query_lower = query.strip().lower()
+            if query_lower in _accept_patterns and _last_suggestions:
+                # Accept = pick first suggestion
+                query = _last_suggestions[0]
+                print(f"  → {query}")
+                _last_suggestions = []
+            elif query_lower in ("1", "2", "3") and _last_suggestions:
+                idx = int(query_lower) - 1
+                if idx < len(_last_suggestions):
+                    query = _last_suggestions[idx]
+                    print(f"  → {query}")
+                _last_suggestions = []
+            elif query_lower in ("no", "không", "skip", "bỏ", "thôi"):
+                # Explicit reject → clear suggestions, let user type next query
+                _last_suggestions = []
                 continue
+            else:
+                _last_suggestions = []  # new topic → clear suggestions
 
             # ── Parse inline images: img:path.jpg ──
             turn_images = list(_pending_images)  # use pending from --image (first turn only)
@@ -713,6 +741,12 @@ def main():
                     print(f"\nAssistant ({elapsed:.1f}s):\n{answer}\n")
 
                 bank.flush()  # persist to JSONL immediately
+
+                # ── Extract follow-up suggestions for shortcut support ──
+                if answer and "💡" in answer:
+                    import re
+                    _last_suggestions = re.findall(r'^\s*\d+\.\s*(.+)$', answer.split("💡")[1], re.MULTILINE)
+                    _last_suggestions = [s.strip() for s in _last_suggestions[:3]]
             except Exception as exc:
                 log.error("Error: %s", exc, exc_info=args.debug)
                 print(f"\n⚠️  Error: {exc}\n")

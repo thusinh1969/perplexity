@@ -552,6 +552,7 @@ JSON array:"""
     lines = ["💡 Bạn có muốn tôi:"]
     for i, s in enumerate(suggestions[:3], 1):
         lines.append(f"   {i}. {str(s).strip()}")
+    lines.append("   (Gõ 1/2/3, Enter=1, hoặc câu hỏi mới)")
     return "\n".join(lines)
 
 
