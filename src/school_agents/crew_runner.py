@@ -477,13 +477,82 @@ def run_crew_with_memory(
     elif not evidence_routes:
         log.info("[run_crew_with_memory] routes=%s — no evidence sources, skipping fact extraction", routes)
 
-    # 6. Persist
+    # 6. Generate smart follow-up suggestions
+    try:
+        suggestions = _generate_followups(cfg, clean_answer, enriched.get("user_query", ""), routes)
+        if suggestions:
+            clean_answer = clean_answer.rstrip() + "\n\n" + suggestions
+            _status(suggestions)  # Print suggestions directly (streaming may skip return value)
+    except Exception as exc:
+        log.debug("[followup] Failed (non-critical): %s", exc)
+
+    # 7. Persist
     memory.save()
     _status("✅ Done")
 
     log.info("[run_crew_with_memory] Done. Answer %d chars (clean %d). Stats: %s",
              len(raw_answer), len(clean_answer), memory.get_stats())
     return clean_answer
+
+
+def _generate_followups(cfg: AppConfig, answer: str, user_query: str, routes: list[str]) -> str:
+    """Generate 2-3 smart follow-up suggestions based on the answer.
+
+    Returns formatted string like:
+        💡 Bạn có muốn tôi:
+        1. Tìm thêm về tác dụng phụ của Prospan?
+        2. So sánh giá Prospan tại các nhà thuốc online?
+        3. Phân tích thành phần với các siro ho thay thế?
+    """
+    from openai import OpenAI
+    from .llm_utils import strip_think_tags, extract_json, NO_THINK_SYSTEM, no_think_extra_body
+
+    client = OpenAI(base_url=cfg.llm.base_url, api_key=cfg.llm.api_key or "no-key")
+    model = cfg.llm.model
+    if model.startswith("openai/"):
+        model = model[len("openai/"):]
+    extra = get_llm_extra_body(cfg)
+
+    prompt = f"""Based on this Q&A, suggest 2-3 natural follow-up questions the user might want to explore next.
+
+USER QUESTION: {user_query[:500]}
+
+ANSWER (summary): {answer[:1000]}
+
+RULES:
+- Write in the SAME language as the user's question (Vietnamese if they wrote Vietnamese).
+- Each suggestion should explore a DIFFERENT angle: deeper analysis, comparison, practical action, related topic.
+- Keep each suggestion short (under 15 words).
+- Make them specific to the content, NOT generic.
+- Return ONLY a JSON array of 2-3 strings. No explanation.
+- Start with [ and end with ]
+
+JSON array:"""
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": NO_THINK_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=cfg.llm.structured_max_tokens,
+        temperature=0.5,
+        extra_body=no_think_extra_body(extra),
+    )
+
+    raw = strip_think_tags(resp.choices[0].message.content or "").strip()
+    cleaned = extract_json(raw)
+    if not cleaned:
+        return ""
+
+    suggestions = json_repair.loads(cleaned)
+    if not isinstance(suggestions, list) or not suggestions:
+        return ""
+
+    lines = ["💡 Bạn có muốn tôi:"]
+    for i, s in enumerate(suggestions[:3], 1):
+        lines.append(f"   {i}. {str(s).strip()}")
+    return "\n".join(lines)
 
 
 def _normalize_image_to_jpeg(b64_data: str, mime: str) -> tuple[str, str]:

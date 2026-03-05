@@ -40,11 +40,18 @@ log = logging.getLogger("school_agents.query_expander")
 EXPAND_PROMPT = """\
 {today}
 
-You are a search query optimizer. Given a user's question and conversation context, generate exactly 3 search queries \
+You are a search query optimizer. Given a user's question, generate exactly 3 search queries \
 that together will find the most comprehensive and accurate answer from the web.
 
-CONVERSATION CONTEXT (use this to understand what the user is referring to):
+CONVERSATION CONTEXT (for reference resolution ONLY):
 {conversation_context}
+
+⚠️ CRITICAL: The user's CURRENT QUESTION below is what you must generate queries for.
+The conversation context above is ONLY useful when the current question contains ambiguous references \
+(pronouns like "it/this/that", or short follow-ups like "price?", "where to buy?", "how about X?") \
+that need the previous context to understand.
+If the current question is about a CLEARLY NEW TOPIC — IGNORE the conversation context entirely. \
+Do NOT let previous topics bleed into queries for a new topic.
 
 STRICT RULES:
 1. Query 1: An ENGLISH search query — precise, well-formed, using standard search terms. \
@@ -55,12 +62,14 @@ STRICT RULES:
    Example: if user asks about a war, this could be "expert analysis [topic] forecast".
 
 CONTEXT-AWARE EXPANSION (CRITICAL):
-- If the user's question references something from previous turns (pronouns like "it", "this", "that", \
-  or short follow-ups like "price?", "where to buy?"), you MUST resolve the reference using conversation context.
-- Example: if previous turns discussed "Prospan cough syrup" and user asks "Price in Vietnam?", \
-  ALL 3 queries must include "Prospan" — never generate generic "price in Vietnam" queries.
-- Example: if previous turns discussed "FPT stock" and user asks "What about FTEL?", \
-  queries must be about "FTEL FPT Telecom Vietnam", not generic FTEL.
+- ONLY use conversation context when the current question has ambiguous references that need resolution.
+- If the question is self-contained and about a new topic → generate queries PURELY from the question itself.
+- Decision rule: Does removing conversation context make the question unanswerable or ambiguous?
+  YES → use context to resolve references. NO → ignore context completely.
+- Example (USE context): previous turns discussed "Prospan cough syrup", user asks "Price in Vietnam?"
+  → "Price" refers to Prospan → queries must include "Prospan"
+- Example (IGNORE context): previous turns discussed "Prospan cough syrup", user asks "Chích ngừa ở Long Châu vs VNVC?"
+  → completely new topic about vaccination → queries about vaccination, NOT Prospan
 
 ENTITY DISAMBIGUATION (CRITICAL):
 - When the query mentions a specific entity (company, person, stock ticker, product, place), \
@@ -90,6 +99,9 @@ User: "Bitcoin giá bao nhiêu?"
 
 Context discussed Prospan cough syrup, user asks: "Mua ở đâu giá rẻ nhất?"
 → ["Prospan cough syrup cheapest price pharmacy 2026", "mua Prospan siro ho giá rẻ nhất ở đâu", "Prospan ivy leaf syrup price comparison online pharmacy"]
+
+Context discussed Prospan, user asks: "Chích ngừa ở Long Châu vs VNVC nơi nào tốt hơn?"
+→ ["Long Chau pharmacy vs VNVC vaccination service comparison Vietnam", "chích ngừa Long Châu vs VNVC nơi nào tốt hơn", "Vietnam vaccination center quality comparison Long Chau VNVC review"]
 
 User question: {user_query}
 
